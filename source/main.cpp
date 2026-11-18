@@ -34,6 +34,7 @@ std::vector<SaveEntry> g_saves;
 std::vector<BackupInfo> g_backupInfos;
 int g_cursor = 0;
 std::string g_status;
+u64 g_statusAt = 0;
 bool g_hasSd = true;
 bool g_picking = false;
 int g_pickCursor = 0;
@@ -198,6 +199,18 @@ void finishJob() {
     }
 }
 
+// Key hints depend on where the highlighted version comes from.
+const char* pickHintForCursor() {
+    const Strings& text = i18n::str();
+    if (g_pickCursor >= 0 && g_pickCursor < static_cast<int>(g_picks.size())) {
+        const std::string& source = g_picks[g_pickCursor].source;
+        if (source == "local") return text.pickHintUpload;
+        if (source == "cloud") return text.pickHintDownload;
+        if (source == "JKSV") return text.pickHintJksv;
+    }
+    return text.pickHint;
+}
+
 ui::State makeState() {
     const Strings& text = i18n::str();
 
@@ -209,16 +222,7 @@ ui::State makeState() {
     state.picking = g_picking;
     state.pickTitle = g_pickTitle;
     state.pickCursor = g_pickCursor;
-    state.pickHint = text.pickHint;
-    if (g_picking && g_pickCursor >= 0 &&
-        g_pickCursor < static_cast<int>(g_picks.size())) {
-        const auto& pick = g_picks[g_pickCursor];
-        if (pick.source == "local") {
-            state.pickHint = text.pickHintUpload;
-        } else if (pick.source == "cloud") {
-            state.pickHint = text.pickHintDownload;
-        }
-    }
+    state.pickHint = pickHintForCursor();
 
     state.screen = g_screen;
     state.menuCursor = g_menuCursor;
@@ -389,6 +393,7 @@ void paint() {
 
 void setStatus(const std::string& status) {
     g_status = status;
+    g_statusAt = SDL_GetTicks64();
     paint();
 }
 
@@ -606,6 +611,7 @@ void addCloudPick(const std::string& name) {
     file.stamp = stamp;
     file.human = saves::humanStamp(stamp);
     file.source = "cloud";
+    file.owner = saves::ownerFromStamp(stamp);
     file.autoSnapshot = stamp.rfind("AUTO_", 0) == 0;
     g_picks.push_back(file);
 }
@@ -626,6 +632,7 @@ void addLocalPick(const std::string& path) {
     file.stamp = stamp;
     file.human = saves::humanStamp(stamp);
     file.source = "local";
+    file.owner = saves::ownerFromStamp(stamp);
     file.autoSnapshot = stamp.rfind("AUTO_", 0) == 0;
     g_picks.push_back(file);
     sortPicks();
@@ -653,7 +660,7 @@ void openPicker() {
     g_pickTitle = entry.title + " · " +
                   (entry.user.empty() ? text.deviceLabel : entry.user);
     g_picking = true;
-    setStatus(text.pickHint);
+    g_status.clear();
 
     if (cloud) {
         const std::string appId = saves::hexId(entry.application_id);
@@ -1110,7 +1117,8 @@ void runUploadPick(const saves::BackupFile& pick) {
 
     const SaveEntry entry = g_saves[g_cursor];
     const std::string name = pick.path.substr(pick.path.find_last_of('/') + 1);
-    g_picking = false;
+    // Keep the list open: an upload that turns out to be a duplicate reports
+    // back inside the picker instead of dropping the user to the main screen.
     startUploadJob(saves::hexId(entry.application_id), name, pick.path);
 }
 
@@ -1343,6 +1351,7 @@ int main(int argc, char** argv) {
     reloadSaves();
     g_status =
         i18n::format(i18n::str().foundSavesFmt, static_cast<int>(g_saves.size()));
+    g_statusAt = SDL_GetTicks64();
 
     u64 nextRepeat = 0;
     bool prevUp = false;
@@ -1454,7 +1463,7 @@ int main(int argc, char** argv) {
                     // Go back to the list the restore was started from.
                     g_prompt = Prompt::None;
                     g_picking = true;
-                    setStatus(text.pickHint);
+                    g_status.clear();
                 } else {
                     g_prompt = Prompt::None;
                     paint();
@@ -1503,12 +1512,12 @@ int main(int argc, char** argv) {
             if (page != 0 && !g_picks.empty()) {
                 const int count = static_cast<int>(g_picks.size());
                 g_pickCursor = ((g_pickCursor + page) % count + count) % count;
-                setStatus(text.pickHint);
+                g_status.clear();
             }
             if (move != 0 && !g_picks.empty()) {
                 const int count = static_cast<int>(g_picks.size());
                 g_pickCursor = ((g_pickCursor + move) % count + count) % count;
-                setStatus(text.pickHint);
+                g_status.clear();
             }
             if (down & HidNpadButton_A && !g_picks.empty()) {
                 playSfx(sound::Sfx::Confirm);
@@ -1621,6 +1630,14 @@ int main(int argc, char** argv) {
                 g_screen = ui::Screen::Menu;
                 g_menuCursor = 0;  // land on Settings
             }
+        }
+
+        // Status text clears itself so old messages do not linger. Read the
+        // clock again here: slow refresh/reload work earlier in this frame
+        // would otherwise make a fresh status look 4 s old and vanish at once.
+        if (!g_status.empty() && SDL_GetTicks64() - g_statusAt >= 4000) {
+            g_status.clear();
+            g_dirty = true;
         }
 
         if (g_dirty) paint();

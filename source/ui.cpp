@@ -337,8 +337,13 @@ void draw(const State& state) {
     // Header.
     fill(0, 0, kWidth, 88, kPanel);
     fill(0, 87, kWidth, 1, kLine);
+    // Sit the subtitle on the same bottom line as the XYS wordmark even
+    // though both use different font sizes.
+    const int titleH = TTF_FontHeight(g_fonts[2]);
+    const int subtitleH = TTF_FontHeight(g_fonts[1]);
     drawText("XYS", 32, 16, 2, kText);
-    drawText(fitText(text.subtitle, 0, 360), 210, 28, 0, kSub);
+    drawText(fitText(text.subtitle, 1, 460), 210, 16 + titleH - subtitleH, 1,
+             kSub);
     drawTextRight(state.cloud ? text.cloudOn : text.cloudOff, 1248, 22, 0,
                   state.cloud ? kAccent : kSub);
     drawTextRight(state.sdOk ? text.sdOk : text.sdMissing, 1248, 50, 0,
@@ -413,11 +418,19 @@ void draw(const State& state) {
             504, 0, kSub);
     }
 
-    // Footer.
-    fill(16, 640, 1248, 76, kPanel);
-    outline(16, 640, 1248, 76, kLine);
-    drawText(fitText(text.hints, 0, 1200), 32, 644, 0, kSub);
-    drawText(fitText(state.status, 0, 1200), 32, 681, 0, kAccent);
+    // Footer. Hidden while the picker owns the screen so its own hint is the
+    // only key guide on display.
+    if (!state.picking) {
+        fill(16, 640, 1248, 76, kPanel);
+        outline(16, 640, 1248, 76, kLine);
+        // Centre both lines so the hint does not hug the top border.
+        const int hintH = TTF_FontHeight(g_fonts[1]);
+        const int hintY =
+            640 + (76 - hintH - 8 - TTF_FontHeight(g_fonts[0])) / 2;
+        drawText(fitText(text.hints, 1, 1200), 32, hintY, 1, kSub);
+        drawText(fitText(state.status, 0, 1200), 32, hintY + hintH + 8, 0,
+                 kAccent);
+    }
 
     if (state.picking) {
         fill(0, 0, kWidth, kHeight, {15, 23, 42, 140});
@@ -452,6 +465,7 @@ void draw(const State& state) {
             }
         }
 
+        drawTextCentered(fitText(state.status, 0, 700), 640, 508, 0, kAccent);
         drawTextCentered(state.pickHint.empty() ? text.pickHint : state.pickHint,
                          640, 556, 0, kAccent);
     }
@@ -517,9 +531,15 @@ void draw(const State& state) {
 
             std::string value = field.value;
             SDL_Color color = kText;
+            int valueFont = 1;
+            int valueY = y + 28;
             if (value.empty()) {
                 value = field.emptyValue.empty() ? text.notSet : field.emptyValue;
                 color = kSub;
+                // Placeholders are hints, so keep them one step smaller than
+                // the values the user actually typed.
+                valueFont = 0;
+                valueY = y + 32;
             } else if (field.secret) {
                 value.assign(value.size() > 40 ? 40 : value.size(), '*');
             }
@@ -527,13 +547,18 @@ void draw(const State& state) {
             if (!example.empty()) {
                 valueWidth -= textWidth(example, 0) + 24;
             }
-            drawText(fitText(value, 1, valueWidth), fieldX, y + 28, 1, color);
+            drawText(fitText(value, valueFont, valueWidth), fieldX, valueY,
+                     valueFont, color);
         }
 
         fill(16, 640, 1248, 76, kPanel);
         outline(16, 640, 1248, 76, kLine);
-        drawText(text.settingsHint, 32, 644, 0, kSub);
-        drawText(fitText(state.status, 0, 1200), 32, 681, 0, kAccent);
+        const int hintH = TTF_FontHeight(g_fonts[1]);
+        const int hintY =
+            640 + (76 - hintH - 8 - TTF_FontHeight(g_fonts[0])) / 2;
+        drawText(text.settingsHint, 32, hintY, 1, kSub);
+        drawText(fitText(state.status, 0, 1200), 32, hintY + hintH + 8, 0,
+                 kAccent);
     } else if (state.screen == Screen::About) {
         fill(0, 0, kWidth, kHeight, kBg);
         fill(0, 0, kWidth, 88, kPanel);

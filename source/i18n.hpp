@@ -158,6 +158,8 @@ struct Strings {
     const char* settingsCloudGroup;
     const char* settingsLocalGroup;
     const char* settingsDefaultPath;
+    const char* pickHintJksv;
+    const char* errEmptySave;
 };
 
 namespace i18n {

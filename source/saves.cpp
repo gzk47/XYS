@@ -161,6 +161,27 @@ bool hasLocalStamp(const std::string& text) {
     return true;
 }
 
+std::string ownerFromStamp(const std::string& stamp) {
+    // Automatic snapshots add an "AUTO_" marker before the username.
+    const std::string body =
+        stamp.rfind("AUTO_", 0) == 0 ? stamp.substr(5) : stamp;
+
+    // Local archives are "<user>_YYYYMMDD-HHMMSS".
+    const size_t separator = body.rfind('_');
+    if (separator != std::string::npos && separator > 0) {
+        if (hasLocalStamp(body.substr(separator + 1))) {
+            return body.substr(0, separator);
+        }
+    }
+
+    // JKSV archives are "<user> - YYYY.MM.DD @ HH.MM.SS".
+    const size_t jksv = body.rfind(" - ");
+    if (jksv != std::string::npos && jksv > 0) {
+        if (isJksvStamp(body.substr(jksv + 3))) return body.substr(0, jksv);
+    }
+    return "";
+}
+
 std::string humanStamp(const std::string& folder) {
     if (folder.size() >= 21) {
         const std::string tail = folder.substr(folder.size() - 21);
@@ -486,27 +507,6 @@ std::string ownerName(const SaveEntry& entry) {
         }
     }
     return name.empty() ? "User" : name;
-}
-
-std::string ownerFromStamp(const std::string& stamp) {
-    // Automatic snapshots add an "AUTO_" marker before the username.
-    const std::string body =
-        stamp.rfind("AUTO_", 0) == 0 ? stamp.substr(5) : stamp;
-
-    // Local archives are "<user>_YYYYMMDD-HHMMSS".
-    const size_t separator = body.rfind('_');
-    if (separator != std::string::npos && separator > 0) {
-        if (hasLocalStamp(body.substr(separator + 1))) {
-            return body.substr(0, separator);
-        }
-    }
-
-    // JKSV archives are "<user> - YYYY.MM.DD @ HH.MM.SS".
-    const size_t jksv = body.rfind(" - ");
-    if (jksv != std::string::npos && jksv > 0) {
-        if (isJksvStamp(body.substr(jksv + 3))) return body.substr(0, jksv);
-    }
-    return "";
 }
 
 size_t utf8Decode(const std::string& text, size_t pos, u32& codepoint) {
@@ -857,6 +857,17 @@ bool backup(const SaveEntry& entry, const std::string& root, std::string& outZip
     if (std::rename(tmp.c_str(), outZip.c_str()) != 0) {
         err = "cannot finalize backup archive";
         std::remove(tmp.c_str());
+        return false;
+    }
+
+    // An archive holding only our metadata restores to nothing and would fail
+    // the download check later, so reject it while backing up.
+    zipx::Summary summary;
+    std::string inspectErr;
+    if (!zipx::inspect(outZip, kNxSaveMetaName, summary, inspectErr) ||
+        summary.fileCount == 0) {
+        std::remove(outZip.c_str());
+        err = "save data is empty";
         return false;
     }
 

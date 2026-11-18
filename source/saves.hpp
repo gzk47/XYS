@@ -49,6 +49,9 @@ std::string timestampNow();
 // "20261116-201533" -> "2026-11-16 20:15:33"
 std::string humanStamp(const std::string& name);
 
+// Username prefix of an archive stamp, empty when the name has none.
+std::string ownerFromStamp(const std::string& stamp);
+
 // Metadata (content hash and user note) is stored in
 // <backup dir>/meta.txt, one line per archive. Notes are local-only.
 bool setNote(const std::string& zipPath, const std::string& note);

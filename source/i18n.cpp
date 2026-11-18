@@ -80,7 +80,7 @@ const Strings kEnglish = {
     "WebDAV collection URL",
     "WebDAV username",
     "WebDAV password",
-    "Local folder (empty = default)",
+    "Local backup folder, leave empty for the default path",
     "About XYS",
     "XYS (XinYue Save) backs up Switch saves and syncs them to WebDAV.",
     "ZIP backups stay on the SD card. JKSV archives are supported.",
@@ -155,6 +155,8 @@ const Strings kEnglish = {
     "Cloud",
     "Local",
     "Leave empty for the default path",
+    "A restore        Left/Right page        B cancel",
+    "This save has no data to back up",
 };
 
 const Strings kChinese = {
@@ -226,7 +228,7 @@ const Strings kChinese = {
     "WebDAV 存档目录地址",
     "WebDAV 用户名",
     "WebDAV 密码",
-    "本地备份目录，留空使用默认",
+    "本地备份目录，留空使用默认路径",
     "关于 XYS",
     "XYS（XinYue Save）是一款 Switch 存档备份与云同步工具。",
     "支持本地 ZIP 备份与 WebDAV 上传下载，兼容 JKSV 存档。",
@@ -301,6 +303,8 @@ const Strings kChinese = {
     "云端配置",
     "本地配置",
     "留空使用默认路径",
+    "A 恢复        左右翻页        B 取消",
+    "该存档没有可备份的数据",
 };
 
 const Strings kTraditional = {
@@ -372,7 +376,7 @@ const Strings kTraditional = {
     "WebDAV 存檔目錄位址",
     "WebDAV 使用者名稱",
     "WebDAV 密碼",
-    "本機備份目錄，留空使用預設",
+    "本機備份目錄，留空使用預設路徑",
     "關於 XYS",
     "XYS（XinYue Save）是一款 Switch 存檔備份與雲端同步工具。",
     "支援本機 ZIP 備份與 WebDAV 上傳下載，相容 JKSV 存檔。",
@@ -447,6 +451,8 @@ const Strings kTraditional = {
     "雲端配置",
     "本機配置",
     "留空使用預設路徑",
+    "A 還原        左右翻頁        B 取消",
+    "此存檔沒有可備份的資料",
 };
 
 }  // namespace
@@ -521,9 +527,12 @@ std::string localizeError(const std::string& err) {
     } else if (err.find("cancelled") != std::string::npos ||
                err.find("canceled") != std::string::npos) {
         label = text.errCancelled;
+    } else if (err.find("save data is empty") != std::string::npos) {
+        label = text.errEmptySave;
     } else if (err.find("cannot open zip") != std::string::npos ||
                err.find("unsafe zip entry") != std::string::npos ||
                err.find("cannot read zip entry") != std::string::npos ||
+               err.find("not a valid backup") != std::string::npos ||
                err.find("cannot finalize zip") != std::string::npos) {
         label = text.errZip;
     } else if (err.find("curl") != std::string::npos ||

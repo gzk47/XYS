@@ -50,6 +50,12 @@ jobs:
         run: |
           make -j$(nproc)
 
+      - name: Package
+        run: |
+          mkdir -p dist/switch/xys
+          cp xys.nro dist/switch/xys/
+          cd dist && zip -qr "../xys.zip" switch
+
       - name: Upload release asset
         uses: softprops/action-gh-release@v3
         with:
@@ -61,3 +67,4 @@ jobs:
           make_latest: true
           files: |
             xys.nro
+            xys.zip

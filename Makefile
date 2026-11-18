@@ -25,7 +25,7 @@ ROMFS       := romfs
 
 APP_TITLE   := XYS
 APP_AUTHOR  := gzk_47
-APP_VERSION := 1.0.0
+APP_VERSION := 1.0.1
 
 DEFINES     := -DAPP_AUTHOR=\"$(APP_AUTHOR)\" -DAPP_VERSION=\"$(APP_VERSION)\"
 
