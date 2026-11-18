@@ -741,7 +741,7 @@ int pruneBackups(const SaveEntry& entry, const std::string& root, int keep) {
     std::vector<BackupFile> snapshots;
     for (const auto& file : listBackups(entry, root, false)) {
         // JKSV archives are read-only and belong to another tool.
-        if (file.source != "local" || file.owner != entry.user) continue;
+        if (file.source != "local" || file.owner != ownerName(entry)) continue;
         (file.autoSnapshot ? snapshots : normal).push_back(file);
     }
 
