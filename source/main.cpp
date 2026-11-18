@@ -1588,7 +1588,7 @@ int main(int argc, char** argv) {
             if (down & HidNpadButton_A) {
                 playSfx(sound::Sfx::Confirm);
                 openPicker();
-            } else if (down & HidNpadButton_X) {
+            } else if (down & HidNpadButton_Y) {
                 playSfx(sound::Sfx::Confirm);
                 if (g_saves.empty()) {
                     setStatus(text.noSaves);
