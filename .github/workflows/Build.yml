@@ -1,0 +1,63 @@
+name: Build
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build and Release
+    runs-on: ubuntu-latest
+    container: devkitpro/devkita64:latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout latest code
+        uses: actions/checkout@v7
+        with:
+          clean: true
+          fetch-depth: 0
+          fetch-tags: true
+          submodules: recursive
+
+      - name: Extract version
+        shell: bash
+        run: |
+          APP_NAME="XYS"
+          VER_FILE="Makefile"
+          KEY="APP_VERSION"
+
+          VERSION="$(grep -F "$KEY" "$VER_FILE" | grep -oE '[0-9]+' | head -3 | paste -s -d '.')"
+          SHORT_HASH="${GITHUB_SHA:0:7}"
+          echo "TAG_NAME=v${VERSION}-${SHORT_HASH}" >> "$GITHUB_ENV"
+          echo "RELEASE_NAME=${APP_NAME} v${VERSION} (${SHORT_HASH})" >> "$GITHUB_ENV"
+          
+      - name: Install dependencies
+        run: |
+          dkp-pacman -S --noconfirm --needed \
+            switch-sdl2 \
+            switch-sdl2_image \
+            switch-sdl2_ttf \
+            switch-freetype \
+            switch-curl \
+            switch-mbedtls \
+            switch-zlib
+
+      - name: Build
+        run: |
+          make -j$(nproc)
+
+      - name: Upload release asset
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ env.TAG_NAME }}
+          name: ${{ env.RELEASE_NAME }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          make_latest: true
+          files: |
+            xys.nro
