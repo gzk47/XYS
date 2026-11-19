@@ -134,6 +134,8 @@ struct Strings {
     const char* cloudLabel;
     // Backup entries owned by other tools cannot be edited or deleted here.
     const char* readOnlyHint;
+    // Cloud notes are shown but never edited from the picker.
+    const char* cloudNoteReadOnly;
     // Settings and localized network / filesystem errors.
     const char* settingsSound;
     const char* exampleSound;
@@ -160,6 +162,7 @@ struct Strings {
     const char* settingsDefaultPath;
     const char* pickHintJksv;
     const char* errEmptySave;
+    const char* noteSyncFailed;
 };
 
 namespace i18n {

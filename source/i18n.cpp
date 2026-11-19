@@ -42,7 +42,7 @@ const Strings kEnglish = {
     "Uploaded %s",
     "Upload failed: %s",
     "Listing remote backups...",
-    "Listing failed: %s",
+    "Failed to list cloud backups: %s",
     "No remote backup for this game",
     "Downloading %s",
     "Download failed: %s",
@@ -121,8 +121,8 @@ const Strings kEnglish = {
     "B cancel",
     "Upload all saves",
     "Download all saves",
-    "Uploads the newest local backup of every game. Games without a local backup are skipped.",
-    "Downloads the newest cloud version of every game; versions already stored locally are skipped.",
+    "Uploads the newest normal local backup of every game and account. AUTO snapshots are skipped.",
+    "Downloads the newest normal cloud backup of every game and account. AUTO snapshots are skipped.",
     "Uploading %d/%d: %s",
     "Downloading %d/%d: %s",
     "Done: %d ok, %d skipped, %d failed",
@@ -133,6 +133,7 @@ const Strings kEnglish = {
     "Note saved",
     "cloud",
     "JKSV backups are read-only here; manage them in JKSV",
+    "Cloud notes are read-only; edit them on the local backup",
     "UI sound",
     "Toggle the move and confirm sounds",
     "Network error",
@@ -157,6 +158,7 @@ const Strings kEnglish = {
     "Leave empty for the default path",
     "A restore        Left/Right page        B cancel",
     "This save has no data to back up",
+    "Could not sync notes",
 };
 
 const Strings kChinese = {
@@ -190,7 +192,7 @@ const Strings kChinese = {
     "已上传 %s",
     "上传失败：%s",
     "正在读取云端列表…",
-    "读取失败：%s",
+    "读取云端列表失败：%s",
     "云端没有该游戏的备份",
     "正在下载 %s",
     "下载失败：%s",
@@ -269,8 +271,8 @@ const Strings kChinese = {
     "B 取消",
     "上传全部存档",
     "下载全部存档",
-    "上传每个游戏最新的本地备份；没有本地备份的游戏会跳过。",
-    "下载每个游戏在云端的最新版本；本地已有同一版本时跳过。",
+    "上传每个游戏、每个账号最新的普通本地备份；AUTO 快照不参与批量上传。",
+    "下载每个游戏、每个账号最新的普通云端备份；AUTO 快照不参与批量下载。",
     "正在上传 %d/%d：%s",
     "正在下载 %d/%d：%s",
     "完成：%d 个成功，%d 个跳过，%d 个失败",
@@ -281,6 +283,7 @@ const Strings kChinese = {
     "备注已保存",
     "云端",
     "JKSV 备份只能查看，请在 JKSV 中管理",
+    "云端备注为只读，请在本地备份上编辑",
     "界面音效",
     "开启或关闭移动、确认等提示音",
     "网络错误",
@@ -305,6 +308,7 @@ const Strings kChinese = {
     "留空使用默认路径",
     "A 恢复        左右翻页        B 取消",
     "该存档没有可备份的数据",
+    "备注同步失败",
 };
 
 const Strings kTraditional = {
@@ -338,7 +342,7 @@ const Strings kTraditional = {
     "已上傳 %s",
     "上傳失敗：%s",
     "正在讀取雲端清單…",
-    "讀取失敗：%s",
+    "讀取雲端清單失敗：%s",
     "雲端沒有此遊戲的備份",
     "正在下載 %s",
     "下載失敗：%s",
@@ -417,8 +421,8 @@ const Strings kTraditional = {
     "B 取消",
     "上傳全部存檔",
     "下載全部存檔",
-    "上傳每個遊戲最新的本機備份；沒有本機備份的遊戲會跳過。",
-    "下載每個遊戲在雲端的最新版本；本機已有同一版本時跳過。",
+    "上傳每個遊戲、每個帳號最新的普通本機備份；AUTO 快照不參與批次上傳。",
+    "下載每個遊戲、每個帳號最新的普通雲端備份；AUTO 快照不參與批次下載。",
     "正在上傳 %d/%d：%s",
     "正在下載 %d/%d：%s",
     "完成：%d 個成功，%d 個跳過，%d 個失敗",
@@ -429,6 +433,7 @@ const Strings kTraditional = {
     "備註已儲存",
     "雲端",
     "JKSV 備份只能檢視，請在 JKSV 中管理",
+    "雲端備註為唯讀，請在本機備份上編輯",
     "介面音效",
     "開啟或關閉移動、確認等提示音",
     "網路錯誤",
@@ -453,6 +458,7 @@ const Strings kTraditional = {
     "留空使用預設路徑",
     "A 還原        左右翻頁        B 取消",
     "此存檔沒有可備份的資料",
+    "備註同步失敗",
 };
 
 }  // namespace

@@ -3,6 +3,7 @@
 #include <switch.h>
 
 #include <functional>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -53,9 +54,19 @@ std::string humanStamp(const std::string& name);
 std::string ownerFromStamp(const std::string& stamp);
 
 // Metadata (content hash and user note) is stored in
-// <backup dir>/meta.txt, one line per archive. Notes are local-only.
+// <backup dir>/meta.txt, one line per archive. Only local rows are editable;
+// cloud rows mirror notes through the same per-title metadata file.
+using BackupNotes = std::map<std::string, std::string>;
+std::string getNote(const std::string& zipPath);
 bool setNote(const std::string& zipPath, const std::string& note);
 void removeMeta(const std::string& zipPath);
+
+// Reads and updates a downloaded cloud meta.txt without dropping content
+// hashes or entries belonging to other archives.
+bool readCloudNotes(const std::string& metaPath, BackupNotes& notes);
+bool setCloudNote(const std::string& metaPath, const std::string& zipName,
+                  const std::string& note);
+bool removeCloudNote(const std::string& metaPath, const std::string& zipName);
 
 BackupInfo backupInfo(const SaveEntry& entry, const std::string& root);
 
@@ -89,9 +100,16 @@ bool backup(const SaveEntry& entry, const std::string& root, std::string& outZip
 bool restore(const SaveEntry& entry, const std::string& zipPath, std::string& err,
              const std::function<void(int)>& onProgress = {});
 
-// Path of the newest local backup, used when uploading.
+// Path of the newest normal local backup for this entry, used by ZL batch
+// upload. Automatic snapshots are never selected.
 bool zipForUpload(const SaveEntry& entry, const std::string& root,
                   std::string& zipPath, std::string& err);
+
+// Newest normal cloud backup for this entry, used by ZR batch download.
+// Ownerless legacy archives are a once-per-title fallback when requested.
+bool cloudZipForDownload(const SaveEntry& entry,
+                         const std::vector<std::string>& names,
+                         bool includeLegacy, std::string& name);
 
 // Moves a downloaded zip into the local library under <stamp>.zip.
 bool importZip(const SaveEntry& entry, const std::string& root,

@@ -259,7 +259,8 @@ bool WebDav::ensureCollection(const std::string& appId, std::string& err,
 bool WebDav::putFile(const std::string& appId, const std::string& name,
                      const std::string& localPath, std::string& err,
                      const std::function<void(int)>& onProgress,
-                     const std::function<bool()>& cancelled) {
+                     const std::function<bool()>& cancelled,
+                     bool cleanupPartial) {
     FILE* file = fopen(localPath.c_str(), "rb");
     if (!file) {
         err = "cannot open " + localPath;
@@ -298,7 +299,7 @@ bool WebDav::putFile(const std::string& appId, const std::string& name,
         // A cancelled or interrupted PUT can leave a partial file on the
         // server. Only clean up when bytes were actually sent, so cancelling
         // before the upload starts never deletes a previous good backup.
-        if (state.started) {
+        if (state.started && cleanupPartial) {
             removeRemote(appId, name);
         }
         err = curl_easy_strerror(result);
@@ -314,7 +315,9 @@ bool WebDav::putFile(const std::string& appId, const std::string& name,
 bool WebDav::getFile(const std::string& appId, const std::string& name,
                      const std::string& localPath, std::string& err,
                      const std::function<void(int)>& onProgress,
-                     const std::function<bool()>& cancelled) {
+                     const std::function<bool()>& cancelled,
+                     bool* notFound) {
+    if (notFound) *notFound = false;
     FILE* file = fopen(localPath.c_str(), "wb");
     if (!file) {
         err = "cannot create " + localPath;
@@ -346,6 +349,7 @@ bool WebDav::getFile(const std::string& appId, const std::string& name,
         return false;
     }
     if (code != 200) {
+        if (notFound && code == 404) *notFound = true;
         remove(localPath.c_str());
         err = "GET HTTP " + std::to_string(code);
         return false;

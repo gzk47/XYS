@@ -381,12 +381,20 @@ std::string nameOf(const std::string& path) {
     return slash == std::string::npos ? path : path.substr(slash + 1);
 }
 
-std::map<std::string, MetaLine> readMetaDir(const std::string& dir) {
+std::map<std::string, MetaLine> readMetaDir(const std::string& dir,
+                                            bool* valid = nullptr) {
     std::map<std::string, MetaLine> entries;
-    if (dir.empty()) return entries;
+    if (valid) *valid = true;
+    if (dir.empty()) {
+        if (valid) *valid = false;
+        return entries;
+    }
 
     FILE* file = fopen(fsx::join(dir, "meta.txt").c_str(), "rb");
-    if (!file) return entries;
+    if (!file) {
+        if (valid) *valid = false;
+        return entries;
+    }
 
     char buffer[512];
     while (fgets(buffer, sizeof(buffer), file)) {
@@ -396,15 +404,23 @@ std::map<std::string, MetaLine> readMetaDir(const std::string& dir) {
             line.pop_back();
         }
         const size_t first = line.find('\t');
-        if (first == std::string::npos) continue;
-        const size_t second = line.find('\t', first + 1);
-        if (second == std::string::npos) continue;
+        const size_t second = first == std::string::npos
+                                  ? std::string::npos
+                                  : line.find('\t', first + 1);
+        const std::string name = second == std::string::npos
+                                     ? std::string()
+                                     : line.substr(second + 1);
+        if (second == std::string::npos || name.empty()) {
+            if (valid) *valid = false;
+            continue;
+        }
 
         MetaLine item;
         item.hash = line.substr(0, first);
         item.note = line.substr(first + 1, second - first - 1);
-        entries[line.substr(second + 1)] = item;
+        entries[name] = item;
     }
+    if (valid && ferror(file)) *valid = false;
     fclose(file);
     return entries;
 }
@@ -507,6 +523,12 @@ std::string ownerName(const SaveEntry& entry) {
         }
     }
     return name.empty() ? "User" : name;
+}
+
+bool newerStamp(const std::string& lhs, const std::string& rhs) {
+    const std::string leftTime = humanStamp(lhs);
+    const std::string rightTime = humanStamp(rhs);
+    return leftTime != rightTime ? leftTime > rightTime : lhs > rhs;
 }
 
 size_t utf8Decode(const std::string& text, size_t pos, u32& codepoint) {
@@ -699,6 +721,11 @@ std::vector<BackupFile> listBackups(const SaveEntry& entry,
     return files;
 }
 
+std::string getNote(const std::string& zipPath) {
+    const std::string note = metaFor(zipPath).note;
+    return note.empty() ? readSmallText(zipPath + ".note") : note;
+}
+
 bool setNote(const std::string& zipPath, const std::string& note) {
     const std::string dir = dirOf(zipPath);
     if (dir.empty()) return false;
@@ -732,6 +759,40 @@ void removeMeta(const std::string& zipPath) {
     }
     std::remove((zipPath + ".hash").c_str());
     std::remove((zipPath + ".note").c_str());
+}
+
+bool readCloudNotes(const std::string& metaPath, BackupNotes& notes) {
+    notes.clear();
+    bool valid = false;
+    const auto entries = readMetaDir(dirOf(metaPath), &valid);
+    if (!valid) return false;
+    for (const auto& entry : entries) {
+        if (!entry.second.note.empty()) notes[entry.first] = entry.second.note;
+    }
+    return true;
+}
+
+bool setCloudNote(const std::string& metaPath, const std::string& zipName,
+                  const std::string& note) {
+    const std::string dir = dirOf(metaPath);
+    if (dir.empty() || zipName.empty()) return false;
+    auto entries = readMetaDir(dir);
+    MetaLine item = entries[zipName];
+    item.note = note;
+    if (item.hash.empty() && item.note.empty()) {
+        entries.erase(zipName);
+    } else {
+        entries[zipName] = item;
+    }
+    return writeMetaDir(dir, entries);
+}
+
+bool removeCloudNote(const std::string& metaPath, const std::string& zipName) {
+    const std::string dir = dirOf(metaPath);
+    if (dir.empty() || zipName.empty()) return false;
+    auto entries = readMetaDir(dir);
+    entries.erase(zipName);
+    return writeMetaDir(dir, entries);
 }
 
 int pruneBackups(const SaveEntry& entry, const std::string& root, int keep) {
@@ -815,28 +876,30 @@ bool backup(const SaveEntry& entry, const std::string& root, std::string& outZip
         return false;
     }
 
-    // Fingerprint the mounted save before packing. When the newest backup of
-    // the same user already holds these bytes, skip writing a duplicate.
-    std::string fingerprint;
-    if (namePrefix.empty()) {
-        std::string latestSameUser;
-        for (const auto& file : listBackups(entry, root, false)) {
-            if (file.source == "local" && !file.autoSnapshot &&
-                file.owner == ownerName(entry)) {
-                latestSameUser = file.path;
-                break;
-            }
+    // Fingerprint the mounted save before packing. When the newest archive of
+    // the same user and the same kind already holds these bytes, skip writing
+    // a duplicate. Normal backups compare with normal backups, pre-restore
+    // snapshots compare with earlier snapshots.
+    const bool autoSnapshot = !namePrefix.empty();
+    std::string latestSameUser;
+    for (const auto& file : listBackups(entry, root, false)) {
+        if (file.source == "local" && file.autoSnapshot == autoSnapshot &&
+            file.owner == ownerName(entry)) {
+            latestSameUser = file.path;
+            break;
         }
-        std::string hashErr;
-        if (zipx::hashDir("ssave:/", fingerprint, hashErr, cancelled) &&
-            !latestSameUser.empty()) {
-            const std::string previous = hashFor(latestSameUser);
-            if (!previous.empty() && previous == fingerprint) {
-                fsdevUnmountDevice("ssave");
-                outZip = latestSameUser;
-                if (unchanged) *unchanged = true;
-                return true;
-            }
+    }
+
+    std::string fingerprint;
+    std::string hashErr;
+    if (zipx::hashDir("ssave:/", fingerprint, hashErr, cancelled) &&
+        !latestSameUser.empty()) {
+        const std::string previous = hashFor(latestSameUser);
+        if (!previous.empty() && previous == fingerprint) {
+            fsdevUnmountDevice("ssave");
+            outZip = latestSameUser;
+            if (unchanged) *unchanged = true;
+            return true;
         }
     }
 
@@ -981,23 +1044,58 @@ bool restore(const SaveEntry& entry, const std::string& zipPath, std::string& er
 bool zipForUpload(const SaveEntry& entry, const std::string& root,
                   std::string& zipPath, std::string& err) {
     const auto files = listBackups(entry, root, false);
-    const std::string owner = ownerName(entry);
-    // Prefer the selected user's own newest archive for the row-level upload.
-    for (const auto& file : files) {
-        if (file.source == "local" && file.owner == owner) {
-            zipPath = file.path;
-            return true;
+    auto newestNormal = [&files](const std::string& owner) -> const BackupFile* {
+        const BackupFile* newest = nullptr;
+        for (const auto& file : files) {
+            if (file.source != "local" || file.autoSnapshot ||
+                file.owner != owner) {
+                continue;
+            }
+            if (!newest || newerStamp(file.stamp, newest->stamp)) newest = &file;
         }
+        return newest;
+    };
+
+    // Prefer the selected user's own newest normal archive. Ownerless archives
+    // from older releases remain a fallback, but AUTO snapshots never qualify.
+    const BackupFile* newest = newestNormal(ownerName(entry));
+    if (!newest) newest = newestNormal("");
+    if (newest) {
+        zipPath = newest->path;
+        return true;
     }
-    // Older releases did not put a username in the file name.
-    for (const auto& file : files) {
-        if (file.source == "local" && file.owner.empty()) {
-            zipPath = file.path;
-            return true;
-        }
-    }
-    err = "no local backup";
+    err = "no local normal backup";
     return false;
+}
+
+bool cloudZipForDownload(const SaveEntry& entry,
+                         const std::vector<std::string>& names,
+                         bool includeLegacy, std::string& name) {
+    auto newestNormal = [&names](const std::string& owner,
+                                 std::string& selected) {
+        bool found = false;
+        std::string bestStamp;
+        for (const auto& candidate : names) {
+            if (candidate.size() < 5 ||
+                candidate.substr(candidate.size() - 4) != ".zip") {
+                continue;
+            }
+            const std::string stamp = candidate.substr(0, candidate.size() - 4);
+            if (stamp.rfind("AUTO_", 0) == 0 ||
+                ownerFromStamp(stamp) != owner) {
+                continue;
+            }
+            if (!found || newerStamp(stamp, bestStamp)) {
+                found = true;
+                bestStamp = stamp;
+                selected = candidate;
+            }
+        }
+        return found;
+    };
+
+    if (newestNormal(ownerName(entry), name)) return true;
+    return includeLegacy && newestNormal("", name);
 }
 
 bool importZip(const SaveEntry& entry, const std::string& root,

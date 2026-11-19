@@ -20,11 +20,13 @@ public:
     bool putFile(const std::string& appId, const std::string& name,
                  const std::string& localPath, std::string& err,
                  const std::function<void(int)>& onProgress = {},
-                 const std::function<bool()>& cancelled = {});
+                 const std::function<bool()>& cancelled = {},
+                 bool cleanupPartial = true);
     bool getFile(const std::string& appId, const std::string& name,
                  const std::string& localPath, std::string& err,
                  const std::function<void(int)>& onProgress = {},
-                 const std::function<bool()>& cancelled = {});
+                 const std::function<bool()>& cancelled = {},
+                 bool* notFound = nullptr);
     // Deletes one remote archive from the backup picker.
     bool removeVersion(const std::string& appId, const std::string& name,
                        std::string& err,

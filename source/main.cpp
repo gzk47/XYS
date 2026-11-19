@@ -8,8 +8,10 @@
 #include <cstdio>
 #include <cstdlib>
 #include <functional>
+#include <map>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
@@ -89,7 +91,8 @@ struct Job {
     std::string result;
     bool cancelled = false;
     bool ok = false;
-    std::vector<std::string> names;  // CloudList results
+    std::vector<std::string> names;  // CloudList results and downloaded paths
+    saves::BackupNotes notes;
 };
 
 std::unique_ptr<Job> g_job;
@@ -98,8 +101,9 @@ int g_lastJobPercent = -1;
 u64 g_lastJobPaint = 0;
 std::string g_restoreAfterDownload;
 
-void mergeCloudPicks(const std::vector<std::string>& names);
-void addCloudPick(const std::string& name);
+void mergeCloudPicks(const std::vector<std::string>& names,
+                     const saves::BackupNotes& notes);
+void addCloudPick(const std::string& name, const saves::BackupNotes& notes);
 void addLocalPick(const std::string& path);
 void sortPicks();
 void runRestore(const std::string& zipPath);
@@ -112,6 +116,115 @@ void setJobStatus(Job& job, const std::string& status) {
 std::string getJobStatus(Job& job) {
     std::lock_guard<std::mutex> lock(job.mutex);
     return job.status;
+}
+
+enum class CloudMetaState { Ready, Missing, Failed };
+
+std::string cloudMetaPath(const std::string& appId) {
+    return std::string(kTmpDir) + "/meta-" + appId + "/meta.txt";
+}
+
+// Downloads and validates the per-title metadata. Only an HTTP 404 means the
+// remote file is absent; every other failure leaves its contents unknown.
+CloudMetaState fetchCloudNotes(const std::string& appId,
+                               saves::BackupNotes& notes, std::string& err,
+                               const std::function<bool()>& cancelled) {
+    notes.clear();
+    const std::string path = cloudMetaPath(appId);
+    const std::string dir = path.substr(0, path.find_last_of('/'));
+    if (!fsx::mkdirs(dir)) {
+        err = "cannot create " + dir;
+        return CloudMetaState::Failed;
+    }
+
+    std::remove(path.c_str());
+    bool notFound = false;
+    if (!g_dav.getFile(appId, "meta.txt", path, err, {}, cancelled, &notFound)) {
+        std::remove(path.c_str());
+        return notFound ? CloudMetaState::Missing : CloudMetaState::Failed;
+    }
+    if (!saves::readCloudNotes(path, notes)) {
+        std::remove(path.c_str());
+        err = "invalid cloud meta.txt";
+        return CloudMetaState::Failed;
+    }
+    return CloudMetaState::Ready;
+}
+
+// A non-empty local note updates only its own remote entry. Other notes and
+// content hashes in the shared meta.txt are preserved.
+bool syncNoteToCloud(const std::string& appId, const std::string& zipName,
+                     const std::string& note, std::string& err,
+                     const std::function<bool()>& cancelled) {
+    if (note.empty()) return true;
+
+    saves::BackupNotes notes;
+    const CloudMetaState state = fetchCloudNotes(appId, notes, err, cancelled);
+    if (state == CloudMetaState::Failed) return false;
+    const auto current = notes.find(zipName);
+    if (current != notes.end() && current->second == note) return true;
+
+    const std::string path = cloudMetaPath(appId);
+    if (!saves::setCloudNote(path, zipName, note)) {
+        err = "cannot write " + path;
+        return false;
+    }
+    const bool ok =
+        g_dav.putFile(appId, "meta.txt", path, err, {}, cancelled, false);
+    std::remove(path.c_str());
+    return ok;
+}
+
+// Downloads never overwrite a non-empty local note. A missing remote file or
+// a missing note is a successful no-op, not a metadata error.
+bool syncNoteFromCloud(const std::string& appId, const std::string& zipPath,
+                       std::string& err,
+                       const std::function<bool()>& cancelled) {
+    if (!saves::getNote(zipPath).empty()) return true;
+
+    saves::BackupNotes notes;
+    const CloudMetaState state = fetchCloudNotes(appId, notes, err, cancelled);
+    if (state == CloudMetaState::Missing) return true;
+    if (state == CloudMetaState::Failed) return false;
+
+    const std::string name = zipPath.substr(zipPath.find_last_of('/') + 1);
+    const auto note = notes.find(name);
+    std::remove(cloudMetaPath(appId).c_str());
+    if (note == notes.end() || note->second.empty()) return true;
+    if (!saves::setNote(zipPath, note->second)) {
+        err = "cannot update local note for " + zipPath;
+        return false;
+    }
+    return true;
+}
+
+// Removes one archive's entry after its remote ZIP has been deleted. If no
+// entries remain, remove the shared remote file instead of uploading a local
+// temporary path that writeMetaDir() has already removed.
+bool removeNoteFromCloud(const std::string& appId, const std::string& zipName,
+                         std::string& err,
+                         const std::function<bool()>& cancelled) {
+    saves::BackupNotes notes;
+    const CloudMetaState state = fetchCloudNotes(appId, notes, err, cancelled);
+    if (state == CloudMetaState::Missing) return true;
+    if (state == CloudMetaState::Failed) return false;
+
+    const std::string path = cloudMetaPath(appId);
+    if (!saves::removeCloudNote(path, zipName)) {
+        err = "cannot write " + path;
+        return false;
+    }
+    const bool ok = fsx::exists(path)
+                        ? g_dav.putFile(appId, "meta.txt", path, err, {}, cancelled,
+                                        false)
+                        : g_dav.removeVersion(appId, "meta.txt", err, cancelled);
+    std::remove(path.c_str());
+    return ok;
+}
+
+void appendNoteSyncFailure(Job& job) {
+    if (!job.result.empty()) job.result += " · ";
+    job.result += i18n::str().noteSyncFailed;
 }
 
 template <typename Work>
@@ -134,9 +247,12 @@ void finishJob() {
 
     const JobKind kind = g_job->kind;
     const std::string result = g_job->result;
-    const bool cancelled = g_job->cancelled || g_job->cancel.load();
     const bool ok = g_job->ok;
+    // Once the ZIP operation has succeeded, a later metadata cancellation
+    // must not turn that completed operation into a failure.
+    const bool cancelled = g_job->cancelled || (g_job->cancel.load() && !ok);
     const std::vector<std::string> names = g_job->names;
+    const saves::BackupNotes notes = g_job->notes;
     g_job.reset();
     g_lastJobPercent = -1;
 
@@ -151,7 +267,7 @@ void finishJob() {
     }
 
     if (kind == JobKind::CloudList) {
-        mergeCloudPicks(names);
+        mergeCloudPicks(names, notes);
     } else {
         if (kind == JobKind::CloudDelete && ok && !cancelled && !names.empty()) {
             const std::string path = "cloud:" + names.front();
@@ -170,7 +286,7 @@ void finishJob() {
         // A finished single upload appears immediately as its own cloud row.
         if (kind == JobKind::Upload && ok && !cancelled && g_picking &&
             !names.empty()) {
-            addCloudPick(names.front());
+            addCloudPick(names.front(), notes);
             sortPicks();
         }
         // A version downloaded from the picker is now a local backup too.
@@ -589,7 +705,7 @@ void sortPicks() {
               });
 }
 
-void addCloudPick(const std::string& name) {
+void addCloudPick(const std::string& name, const saves::BackupNotes& notes) {
     if (name.size() < 5 || name.substr(name.size() - 4) != ".zip") return;
     const std::string stamp = name.substr(0, name.size() - 4);
     if (stamp.empty() || stamp.find('/') != std::string::npos ||
@@ -597,14 +713,13 @@ void addCloudPick(const std::string& name) {
         return;
     }
 
-    bool listed = false;
-    for (const auto& pick : g_picks) {
+    const auto note = notes.find(name);
+    for (auto& pick : g_picks) {
         if (pick.source == "cloud" && pick.stamp == stamp) {
-            listed = true;
-            break;
+            if (note != notes.end()) pick.note = note->second;
+            return;
         }
     }
-    if (listed) return;
 
     saves::BackupFile file;
     file.path = "cloud:" + name;
@@ -613,6 +728,7 @@ void addCloudPick(const std::string& name) {
     file.source = "cloud";
     file.owner = saves::ownerFromStamp(stamp);
     file.autoSnapshot = stamp.rfind("AUTO_", 0) == 0;
+    if (note != notes.end()) file.note = note->second;
     g_picks.push_back(file);
 }
 
@@ -623,8 +739,11 @@ void addLocalPick(const std::string& path) {
     if (base.size() < 5) return;
     const std::string stamp = base.substr(0, base.size() - 4);
 
-    for (const auto& pick : g_picks) {
-        if (pick.source == "local" && pick.stamp == stamp) return;
+    for (auto& pick : g_picks) {
+        if (pick.source == "local" && pick.stamp == stamp) {
+            pick.note = saves::getNote(path);
+            return;
+        }
     }
 
     saves::BackupFile file;
@@ -634,12 +753,14 @@ void addLocalPick(const std::string& path) {
     file.source = "local";
     file.owner = saves::ownerFromStamp(stamp);
     file.autoSnapshot = stamp.rfind("AUTO_", 0) == 0;
+    file.note = saves::getNote(path);
     g_picks.push_back(file);
     sortPicks();
 }
 
-void mergeCloudPicks(const std::vector<std::string>& names) {
-    for (const auto& name : names) addCloudPick(name);
+void mergeCloudPicks(const std::vector<std::string>& names,
+                     const saves::BackupNotes& notes) {
+    for (const auto& name : names) addCloudPick(name, notes);
     sortPicks();
 }
 
@@ -666,7 +787,8 @@ void openPicker() {
         const std::string appId = saves::hexId(entry.application_id);
         startJob(JobKind::CloudList, [appId](Job& job) {
             const Strings& text = i18n::str();
-            setJobStatus(job, text.listingRemote);
+            // The progress panel already prints text.listingRemote as its
+            // title, so leave the status line empty for this job.
             std::string err;
             auto cancelled = [&job]() { return job.cancel.load(); };
             if (!g_dav.listVersions(appId, job.names, err, cancelled)) {
@@ -680,6 +802,11 @@ void openPicker() {
                 return;
             }
             job.ok = true;
+            if (fetchCloudNotes(appId, job.notes, err, cancelled) ==
+                CloudMetaState::Failed) {
+                // Metadata is optional: keep the ZIP rows usable without notes.
+                job.result = text.noteSyncFailed;
+            }
         });
     }
 }
@@ -703,7 +830,7 @@ void runCloudDownload(const std::string& name) {
     g_restoreAfterDownload = tmp;
     startJob(JobKind::Download, [appId, name, tmp](Job& job) {
         const Strings& text = i18n::str();
-        setJobStatus(job, i18n::format(text.downloadingFmt, name.c_str()));
+        setJobStatus(job, name);
         std::string err;
         auto cancelled = [&job]() { return job.cancel.load(); };
         if (!g_dav.getFile(appId, name, tmp, err,
@@ -746,21 +873,41 @@ void runCloudDownloadToLocal(const std::string& name) {
     const std::string tmp = std::string(kTmpDir) + "/" + appId + "-save.zip";
     const std::string root = g_backupDir;
 
+    std::string localPath;
     for (const auto& file : saves::listBackups(entry, root, false)) {
         if (file.source == "local" && file.stamp == stamp) {
-            setStatus(text.alreadyLocal);
-            return;
+            localPath = file.path;
+            break;
         }
     }
+    if (!localPath.empty() && !saves::getNote(localPath).empty()) {
+        setStatus(text.alreadyLocal);
+        return;
+    }
 
-    // Close the list so the progress overlay and the result are visible.
-    g_picking = false;
-    startJob(JobKind::Download, [entry, appId, name, stamp, tmp, root](Job& job) {
+    // A new ZIP uses the main-screen progress view. For an existing ZIP with
+    // an empty note, keep the picker open so its local row updates in place.
+    if (localPath.empty()) g_picking = false;
+    startJob(JobKind::Download,
+             [entry, appId, name, stamp, tmp, root, localPath](Job& job) {
         const Strings& text = i18n::str();
         auto cancelled = [&job]() { return job.cancel.load(); };
-        setJobStatus(job, i18n::format(text.downloadingFmt, name.c_str()));
 
         std::string err;
+        if (!localPath.empty()) {
+            job.percent = 100;
+            job.ok = true;
+            job.names.push_back(localPath);
+            job.result = text.alreadyLocal;
+            if (!syncNoteFromCloud(appId, localPath, err, cancelled)) {
+                appendNoteSyncFailure(job);
+            } else if (!saves::getNote(localPath).empty()) {
+                job.result = text.noteSaved;
+            }
+            return;
+        }
+
+        setJobStatus(job, name);
         if (!g_dav.getFile(appId, name, tmp, err,
                            [&job](int p) { job.percent = p / 2; }, cancelled)) {
             remove(tmp.c_str());
@@ -787,6 +934,9 @@ void runCloudDownloadToLocal(const std::string& name) {
         job.ok = true;
         job.names.push_back(outZip);
         job.result = i18n::format(text.downloadedToFmt, outZip.c_str());
+        if (!syncNoteFromCloud(appId, outZip, err, cancelled)) {
+            appendNoteSyncFailure(job);
+        }
     });
 }
 
@@ -809,15 +959,18 @@ void deleteSelectedBackup() {
     // Keep the remote versions already merged into the picker: listBackups()
     // only knows local and JKSV archives.
     std::vector<std::string> cloudNames;
+    saves::BackupNotes cloudNotes;
     for (const auto& pick : g_picks) {
         if (pick.source == "cloud" && pick.path.rfind("cloud:", 0) == 0) {
-            cloudNames.push_back(pick.path.substr(6));
+            const std::string name = pick.path.substr(6);
+            cloudNames.push_back(name);
+            if (!pick.note.empty()) cloudNotes[name] = pick.note;
         }
     }
 
     g_picks = saves::listBackups(g_saves[g_cursor], g_backupDir,
                                  g_config.readJksv);
-    mergeCloudPicks(cloudNames);
+    mergeCloudPicks(cloudNames, cloudNotes);
     if (g_picks.empty()) {
         g_picking = false;
     } else if (g_pickCursor >= static_cast<int>(g_picks.size())) {
@@ -858,6 +1011,9 @@ void runCloudDelete(const std::string& name) {
         job.percent = 100;
         job.ok = true;
         job.result = i18n::format(text.cloudDeletedFmt, name.c_str());
+        if (!removeNoteFromCloud(appId, name, err, cancelled)) {
+            appendNoteSyncFailure(job);
+        }
     });
 }
 
@@ -983,46 +1139,58 @@ void startUploadJob(const std::string& appId, const std::string& name,
                     const std::string& zipPath) {
     startJob(JobKind::Upload, [appId, name, zipPath](Job& job) {
         const Strings& text = i18n::str();
-        setJobStatus(job, text.uploading);
+        // The progress panel already prints text.uploadTitle as its title,
+        // so this job leaves the status line empty.
         std::string err;
 
         auto progress = [&job](int percent) { job.percent = percent; };
         auto cancelled = [&job]() { return job.cancel.load(); };
 
-        // Skip when this exact archive is already on the server.
+        bool exists = false;
         std::vector<std::string> names;
-        if (g_dav.listVersions(appId, names, err, cancelled) &&
-            std::find(names.begin(), names.end(), name) != names.end()) {
-            job.percent = 100;
+        if (g_dav.listVersions(appId, names, err, cancelled)) {
+            exists = std::find(names.begin(), names.end(), name) != names.end();
+        }
+
+        if (exists) {
+            // The ZIP needs no transfer, but its note still needs syncing.
             job.ok = true;
-            job.names.push_back(name);
             job.result = text.uploadSkippedExists;
-            return;
+        } else {
+            bool ok = g_dav.ensureCollection(appId, err, cancelled);
+            if (ok) {
+                ok = g_dav.putFile(appId, name, zipPath, err, progress, cancelled);
+            }
+            if (job.cancel.load()) {
+                job.cancelled = true;
+                job.result = text.uploadCancelled;
+                return;
+            }
+            if (!ok) {
+                job.result = i18n::format(text.uploadFailedFmt,
+                                          i18n::localizeError(err).c_str());
+                return;
+            }
+            job.ok = true;
+            job.result = i18n::format(text.uploadedFmt, name.c_str());
         }
 
-        bool ok = g_dav.ensureCollection(appId, err, cancelled);
-        if (ok) {
-            ok = g_dav.putFile(appId, name, zipPath, err, progress, cancelled);
+        job.percent = 100;
+        job.names.push_back(name);
+        const std::string note = saves::getNote(zipPath);
+        if (!note.empty()) {
+            if (syncNoteToCloud(appId, name, note, err, cancelled)) {
+                job.notes[name] = note;
+            } else {
+                appendNoteSyncFailure(job);
+            }
         }
-
-        if (job.cancel.load()) {
-            job.cancelled = true;
-            job.result = text.uploadCancelled;
-            return;
-        }
-        if (ok) {
-            job.percent = 100;
-            job.names.push_back(name);
-        }
-        job.ok = ok;
-        job.result = ok ? i18n::format(text.uploadedFmt, name.c_str())
-                        : i18n::format(text.uploadFailedFmt, i18n::localizeError(err).c_str());
     });
 }
 
-// Batch upload: uploads the newest local archive of every game. Games without
-// a local backup are skipped instead of being backed up implicitly.
-// Single-archive uploads start from the picker instead.
+// Batch upload: uploads the newest normal local archive of every game and
+// account. AUTO snapshots and games without a normal backup are skipped.
+// Single-archive uploads, including AUTO snapshots, start from the picker.
 void runUpload() {
     const Strings& text = i18n::str();
     if (g_saves.empty()) {
@@ -1039,7 +1207,12 @@ void runUpload() {
         int done = 0;
         int skipped = 0;
         int failed = 0;
+        bool notesFailed = false;
+        bool notesCancelled = false;
         std::string lastError;
+        std::map<std::string, std::vector<std::string>> cloudLists;
+        std::map<std::string, std::string> cloudListErrors;
+        std::set<std::string> legacyUploads;
         const int count = static_cast<int>(entries.size());
 
         for (int i = 0; i < count && !job.cancel.load(); ++i) {
@@ -1056,16 +1229,44 @@ void runUpload() {
             }
             if (job.cancel.load()) break;
             const std::string name = zipPath.substr(zipPath.find_last_of('/') + 1);
-
-            std::vector<std::string> names;
-            if (!g_dav.listVersions(appId, names, err, cancelled)) {
-                if (job.cancel.load()) break;
-                ++failed;
-                lastError = err;
+            const std::string stamp = name.substr(0, name.size() - 4);
+            // An ownerless legacy archive belongs to the title, not to every
+            // account row. Process it at most once per batch.
+            if (saves::ownerFromStamp(stamp).empty() &&
+                !legacyUploads.insert(appId).second) {
+                ++skipped;
                 continue;
             }
-            if (std::find(names.begin(), names.end(), name) != names.end()) {
+
+            auto remote = cloudLists.find(appId);
+            if (remote == cloudLists.end() &&
+                cloudListErrors.find(appId) != cloudListErrors.end()) {
+                ++failed;
+                continue;
+            }
+            if (remote == cloudLists.end()) {
+                std::vector<std::string> names;
+                if (!g_dav.listVersions(appId, names, err, cancelled)) {
+                    if (job.cancel.load()) break;
+                    cloudListErrors[appId] = err;
+                    ++failed;
+                    lastError = err;
+                    continue;
+                }
+                remote = cloudLists.emplace(appId, names).first;
+            }
+            const std::string note = saves::getNote(zipPath);
+            if (std::find(remote->second.begin(), remote->second.end(), name) !=
+                remote->second.end()) {
                 ++skipped;
+                if (!note.empty() &&
+                    !syncNoteToCloud(appId, name, note, err, cancelled)) {
+                    notesFailed = true;
+                }
+                if (job.cancel.load()) {
+                    notesCancelled = true;
+                    break;
+                }
                 continue;
             }
 
@@ -1081,12 +1282,19 @@ void runUpload() {
             if (job.cancel.load()) break;
             if (ok) {
                 ++done;
+                remote->second.push_back(name);
+                if (!note.empty() &&
+                    !syncNoteToCloud(appId, name, note, err, cancelled)) {
+                    notesFailed = true;
+                }
+                if (job.cancel.load()) notesCancelled = true;
             } else {
                 ++failed;
                 lastError = err;
             }
         }
 
+        if (notesCancelled) job.cancel = false;
         if (job.cancel.load()) {
             job.cancelled = true;
             job.result = text.uploadCancelled;
@@ -1097,6 +1305,7 @@ void runUpload() {
         job.result = failed > 0 && done + skipped == 0
                          ? i18n::localizeError(lastError)
                          : i18n::format(text.syncDoneFmt, done, skipped, failed);
+        if (notesFailed) appendNoteSyncFailure(job);
     });
 }
 
@@ -1132,8 +1341,8 @@ void runDownload(bool all = false) {
 
     const std::string root = g_backupDir;
     if (all) {
-        // Batch mode: pull the newest remote archive of every game, skipping
-        // games whose newest local backup already has the same stamp.
+        // Batch mode: pull the newest normal remote archive of every game and
+        // account. AUTO snapshots stay available only for manual downloads.
         const std::vector<SaveEntry> entries = g_saves;
         startJob(JobKind::Download, [entries, root](Job& job) {
             const Strings& text = i18n::str();
@@ -1145,7 +1354,12 @@ void runDownload(bool all = false) {
             int done = 0;
             int skipped = 0;
             int failed = 0;
+            bool notesFailed = false;
+            bool notesCancelled = false;
             std::string lastError;
+            std::map<std::string, std::vector<std::string>> cloudLists;
+            std::map<std::string, std::string> cloudListErrors;
+            std::set<std::string> legacyDownloads;
             const int count = static_cast<int>(entries.size());
 
             for (int i = 0; i < count && !job.cancel.load(); ++i) {
@@ -1155,29 +1369,34 @@ void runDownload(bool all = false) {
                                                count, entry.title.c_str()));
                 job.percent = i * 100 / count;
                 std::string err;
-                std::vector<std::string> names;
-                if (!g_dav.listVersions(appId, names, err, cancelled)) {
-                    if (job.cancel.load()) break;
+                auto remote = cloudLists.find(appId);
+                if (remote == cloudLists.end() &&
+                    cloudListErrors.find(appId) != cloudListErrors.end()) {
                     ++failed;
-                    lastError = err;
                     continue;
                 }
-                if (names.empty()) {
+                if (remote == cloudLists.end()) {
+                    std::vector<std::string> names;
+                    if (!g_dav.listVersions(appId, names, err, cancelled)) {
+                        if (job.cancel.load()) break;
+                        cloudListErrors[appId] = err;
+                        ++failed;
+                        lastError = err;
+                        continue;
+                    }
+                    remote = cloudLists.emplace(appId, names).first;
+                }
+                if (remote->second.empty()) {
                     ++skipped;
                     continue;
                 }
-                const auto latest = std::max_element(
-                    names.begin(), names.end(),
-                    [](const std::string& lhs, const std::string& rhs) {
-                        const std::string leftTime = saves::humanStamp(lhs);
-                        const std::string rightTime = saves::humanStamp(rhs);
-                        if (leftTime != rightTime) return leftTime < rightTime;
-                        return lhs < rhs;
-                    });
-                const std::string name = *latest;
-                if (name.size() < 5 || name.substr(name.size() - 4) != ".zip") {
-                    ++failed;
-                    lastError = text.badRemoteName;
+
+                std::string name;
+                const bool includeLegacy =
+                    legacyDownloads.find(appId) == legacyDownloads.end();
+                if (!saves::cloudZipForDownload(entry, remote->second,
+                                                includeLegacy, name)) {
+                    ++skipped;
                     continue;
                 }
                 const std::string stamp = name.substr(0, name.size() - 4);
@@ -1187,17 +1406,29 @@ void runDownload(bool all = false) {
                     lastError = text.badRemoteName;
                     continue;
                 }
+                if (saves::ownerFromStamp(stamp).empty()) {
+                    legacyDownloads.insert(appId);
+                }
                 // Skip a version the local library already holds, otherwise
-                // repeated batch runs would import name-1.zip copies.
-                bool haveLocal = false;
+                // repeated batch runs would import name-1.zip copies. An empty
+                // local note can still be filled from the cloud.
+                std::string localPath;
                 for (const auto& file : saves::listBackups(entry, root, false)) {
                     if (file.source == "local" && file.stamp == stamp) {
-                        haveLocal = true;
+                        localPath = file.path;
                         break;
                     }
                 }
-                if (haveLocal) {
+                if (!localPath.empty()) {
                     ++skipped;
+                    if (saves::getNote(localPath).empty() &&
+                        !syncNoteFromCloud(appId, localPath, err, cancelled)) {
+                        notesFailed = true;
+                    }
+                    if (job.cancel.load()) {
+                        notesCancelled = true;
+                        break;
+                    }
                     continue;
                 }
 
@@ -1219,12 +1450,17 @@ void runDownload(bool all = false) {
                 remove(tmp.c_str());
                 if (ok) {
                     ++done;
+                    if (!syncNoteFromCloud(appId, outZip, err, cancelled)) {
+                        notesFailed = true;
+                    }
+                    if (job.cancel.load()) notesCancelled = true;
                 } else {
                     ++failed;
                     lastError = err;
                 }
             }
 
+            if (notesCancelled) job.cancel = false;
             if (job.cancel.load()) {
                 job.cancelled = true;
                 job.result = text.downloadCancelled;
@@ -1235,6 +1471,7 @@ void runDownload(bool all = false) {
             job.result = failed > 0 && done + skipped == 0
                              ? i18n::localizeError(lastError)
                              : i18n::format(text.syncDoneFmt, done, skipped, failed);
+            if (notesFailed) appendNoteSyncFailure(job);
         });
         return;
     }
@@ -1286,13 +1523,30 @@ void runDownload(bool all = false) {
             return;
         }
 
+        std::string localPath;
+        for (const auto& file : saves::listBackups(entry, root, false)) {
+            if (file.source == "local" && file.stamp == stamp) {
+                localPath = file.path;
+                break;
+            }
+        }
+        if (!localPath.empty()) {
+            job.percent = 100;
+            job.ok = true;
+            job.result = text.alreadyLocal;
+            if (!syncNoteFromCloud(appId, localPath, err, cancelled)) {
+                appendNoteSyncFailure(job);
+            }
+            return;
+        }
+
         if (!fsx::mkdirs(kTmpDir)) {
             job.result = text.tmpDirFailed;
             return;
         }
         const std::string tmp = std::string(kTmpDir) + "/" + appId + "-dl.zip";
 
-        setJobStatus(job, i18n::format(text.downloadingFmt, name.c_str()));
+        setJobStatus(job, name);
         if (!g_dav.getFile(appId, name, tmp, err,
                            [&job](int percent) { job.percent = percent; },
                            cancelled)) {
@@ -1315,6 +1569,9 @@ void runDownload(bool all = false) {
         job.percent = 100;
         job.ok = true;
         job.result = i18n::format(text.downloadedToFmt, outZip.c_str());
+        if (!syncNoteFromCloud(appId, outZip, err, cancelled)) {
+            appendNoteSyncFailure(job);
+        }
     });
 }
 
@@ -1545,12 +1802,16 @@ int main(int argc, char** argv) {
                 }
             } else if (down & HidNpadButton_Y) {
                 if (!g_picks.empty()) {
-                    if (g_picks[g_pickCursor].source == "local") {
+                    const std::string& source = g_picks[g_pickCursor].source;
+                    if (source == "local") {
                         playSfx(sound::Sfx::Confirm);
                         editBackupNote();
-                    } else {
+                    } else if (source == "JKSV") {
                         playSfx(sound::Sfx::Error);
                         setStatus(text.readOnlyHint);
+                    } else {
+                        playSfx(sound::Sfx::Error);
+                        setStatus(text.cloudNoteReadOnly);
                     }
                 }
             } else if (down & HidNpadButton_Minus) {
