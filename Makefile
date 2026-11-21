@@ -18,14 +18,14 @@ TOPDIR ?= $(CURDIR)
 #---------------------------------------------------------------------------------
 TARGET      := xys
 BUILD       := build
-SOURCES     := source
+SOURCES     := source source/lang
 DATA        :=
 INCLUDES    := source
 ROMFS       := romfs
 
 APP_TITLE   := XYS
 APP_AUTHOR  := gzk_47
-APP_VERSION := 1.0.1
+APP_VERSION := 1.0.2
 
 DEFINES     := -DAPP_AUTHOR=\"$(APP_AUTHOR)\" -DAPP_VERSION=\"$(APP_VERSION)\"
 

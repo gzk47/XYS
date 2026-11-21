@@ -50,6 +50,8 @@ Config load() {
             cfg.sound = value != "0" && value != "false";
         } else if (key == "read_jksv") {
             cfg.readJksv = value != "0" && value != "false";
+        } else if (key == "bcat") {
+            cfg.bcat = value != "0" && value != "false";
         } else if (key == "keep_backups") {
             cfg.keepBackups = atoi(value.c_str());
         }
@@ -79,7 +81,9 @@ void ensureTemplate() {
     fputs("sound=1\n", file);
     fputs("# 读取 JKSV 备份：1 开启（默认），0 关闭\n", file);
     fputs("read_jksv=1\n", file);
-    fputs("# 每款游戏最多保留多少份本地备份（0 = 不自动清理）\n", file);
+    fputs("# 活动数据（BCAT）存档：1 开启，0 关闭（默认）\n", file);
+    fputs("bcat=0\n", file);
+    fputs("# 每个账号的普通备份与快照各保留多少份（0 = 不自动清理）\n", file);
     fputs("keep_backups=10\n", file);
     fclose(file);
 }
@@ -87,7 +91,11 @@ void ensureTemplate() {
 bool save(const Config& cfg) {
     if (!fsx::mkdirs("sdmc:/switch/xys")) return false;
 
-    FILE* file = fopen(path(), "w");
+    // Write to a temporary file and rename it over the old one so a power loss
+    // never leaves a half-written config behind.
+    const std::string target = path();
+    const std::string tmp = target + ".tmp";
+    FILE* file = fopen(tmp.c_str(), "w");
     if (!file) return false;
 
     const std::string baseUrl = trim(cfg.baseUrl);
@@ -110,9 +118,22 @@ bool save(const Config& cfg) {
     fprintf(file, "sound=%d\n", cfg.sound ? 1 : 0);
     fputs("# 读取 JKSV 备份：1 开启（默认），0 关闭\n", file);
     fprintf(file, "read_jksv=%d\n", cfg.readJksv ? 1 : 0);
-    fputs("# 每款游戏最多保留多少份本地备份（0 = 不自动清理）\n", file);
+    fputs("# 活动数据（BCAT）存档：1 开启，0 关闭（默认）\n", file);
+    fprintf(file, "bcat=%d\n", cfg.bcat ? 1 : 0);
+    fputs("# 每个账号的普通备份与快照各保留多少份（0 = 不自动清理）\n", file);
     fprintf(file, "keep_backups=%d\n", cfg.keepBackups);
-    fclose(file);
+    if (fclose(file) != 0) {
+        std::remove(tmp.c_str());
+        return false;
+    }
+    if (std::rename(tmp.c_str(), target.c_str()) != 0) {
+        // Some FAT implementations refuse to replace an existing file.
+        std::remove(target.c_str());
+        if (std::rename(tmp.c_str(), target.c_str()) != 0) {
+            std::remove(tmp.c_str());
+            return false;
+        }
+    }
     return true;
 }
 

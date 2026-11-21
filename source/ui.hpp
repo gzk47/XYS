@@ -11,6 +11,7 @@ struct Row {
     u64 appId = 0;
     std::string title;
     std::string user;
+    bool bcat = false;
     double sizeMb = 0.0;
     int backups = 0;
     std::string latest;    // human readable time, empty when there is none
@@ -69,8 +70,10 @@ struct State {
     std::string progressHint;
 };
 
-bool init(const char* fontPath);
+bool init();
 void shutdown();
+// Reason for the last init() failure; empty once init() succeeds.
+const char* lastError();
 void draw(const State& state);
 void invalidateIcons();
 

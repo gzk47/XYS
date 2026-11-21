@@ -163,6 +163,24 @@ struct Strings {
     const char* pickHintJksv;
     const char* errEmptySave;
     const char* noteSyncFailed;
+    // Mount failed because the game is running or the save was never created.
+    const char* openSaveFailed;
+    // BCAT (downloadable event data) support and backup retention.
+    const char* bcatLabel;
+    const char* settingsBcat;
+    const char* exampleBcat;
+    const char* bcatRestoreWarn;
+    const char* settingsKeep;
+    const char* exampleKeep;
+    // Preview panel labels on the save list.
+    const char* latestLabel;
+    const char* backupsLabel;
+    const char* titleIdLabel;
+    const char* hintSnapshot;
+    const char* hintSound;
+    const char* hintJksv;
+    // Restore rejected because the archive holds another save type.
+    const char* errTypeMismatch;
 };
 
 namespace i18n {
@@ -171,6 +189,12 @@ namespace i18n {
 void init();
 
 const Strings& str();
+
+// True when the UI language needs Simplified / Traditional Chinese glyphs.
+bool isSimplified();
+bool isTraditional();
+// True when the UI language needs Korean glyphs.
+bool isKorean();
 
 std::string format(const char* pattern, ...);
 

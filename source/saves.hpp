@@ -43,7 +43,7 @@ struct BackupFile {
     bool autoSnapshot = false;  // created automatically before a restore
 };
 
-std::vector<SaveEntry> list();
+std::vector<SaveEntry> list(bool includeBcat = false);
 std::string hexId(u64 id);
 std::string timestampNow();
 
@@ -52,6 +52,14 @@ std::string humanStamp(const std::string& name);
 
 // Username prefix of an archive stamp, empty when the name has none.
 std::string ownerFromStamp(const std::string& stamp);
+
+// Owner name for display: drops the "U_" escape that keeps account nicknames
+// from colliding with the reserved Device/BCAT/AUTO_ prefixes.
+std::string displayOwner(const std::string& owner);
+
+// Whether an archive stamp belongs to the given save data type. Device and
+// BCAT archives are kept out of account rows and vice versa.
+bool stampMatchesType(const std::string& stamp, FsSaveDataType type);
 
 // Metadata (content hash and user note) is stored in
 // <backup dir>/meta.txt, one line per archive. Only local rows are editable;

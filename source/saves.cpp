@@ -7,8 +7,10 @@
 #include <cstring>
 #include <map>
 #include <sys/stat.h>
+#include <utility>
 
 #include "fsutil.hpp"
+#include "i18n.hpp"
 #include "zipx.hpp"
 
 namespace saves {
@@ -60,6 +62,10 @@ s64 journalFromNacp(u64 applicationId, u8 type) {
             return static_cast<s64>(nacp->device_save_data_journal_size);
         }
         return static_cast<s64>(nacp->device_save_data_journal_size_max);
+    }
+    // BCAT has no dedicated journal field; JKSV uses the delivery cache size.
+    if (type == FsSaveDataType_Bcat) {
+        return static_cast<s64>(nacp->bcat_delivery_cache_storage_size);
     }
     if (nacp->user_account_save_data_journal_size > 0) {
         return static_cast<s64>(nacp->user_account_save_data_journal_size);
@@ -162,9 +168,14 @@ bool hasLocalStamp(const std::string& text) {
 }
 
 std::string ownerFromStamp(const std::string& stamp) {
-    // Automatic snapshots add an "AUTO_" marker before the username.
-    const std::string body =
-        stamp.rfind("AUTO_", 0) == 0 ? stamp.substr(5) : stamp;
+    // Automatic snapshots add an "AUTO_" marker before the username. JKSV
+    // names its automatic backups "AUTO - <user> - <date>".
+    std::string body = stamp;
+    if (body.rfind("AUTO_", 0) == 0) {
+        body = body.substr(5);
+    } else if (body.rfind("AUTO - ", 0) == 0) {
+        body = body.substr(7);
+    }
 
     // Local archives are "<user>_YYYYMMDD-HHMMSS".
     const size_t separator = body.rfind('_');
@@ -180,6 +191,12 @@ std::string ownerFromStamp(const std::string& stamp) {
         if (isJksvStamp(body.substr(jksv + 3))) return body.substr(0, jksv);
     }
     return "";
+}
+
+std::string displayOwner(const std::string& owner) {
+    // ownerName() escapes at most once, and names that already begin with
+    // "U_" are escaped as well, so one leading "U_" is always the escape.
+    return owner.rfind("U_", 0) == 0 ? owner.substr(2) : owner;
 }
 
 std::string humanStamp(const std::string& folder) {
@@ -202,7 +219,7 @@ std::string humanStamp(const std::string& folder) {
     return folder;
 }
 
-std::vector<SaveEntry> list() {
+std::vector<SaveEntry> list(bool includeBcat) {
     std::vector<SaveEntry> entries;
 
     FsSaveDataInfoReader reader;
@@ -218,7 +235,11 @@ std::vector<SaveEntry> list() {
     while (R_SUCCEEDED(fsSaveDataInfoReaderRead(&reader, &info, 1, &total)) &&
            total > 0) {
         const bool device = info.save_data_type == FsSaveDataType_Device;
-        if (info.save_data_type != FsSaveDataType_Account && !device) continue;
+        const bool bcat = info.save_data_type == FsSaveDataType_Bcat;
+        if (info.save_data_type != FsSaveDataType_Account && !device &&
+            !(bcat && includeBcat)) {
+            continue;
+        }
         if (info.save_data_space_id != FsSaveDataSpaceId_User &&
             info.save_data_space_id != FsSaveDataSpaceId_SdUser) {
             continue;
@@ -226,7 +247,8 @@ std::vector<SaveEntry> list() {
         if (info.save_data_index != 0) continue;
         if (info.application_id == 0) continue;
         // Device saves are shared by the whole console and carry no user id.
-        if (!device && isAllZero(info.uid)) continue;
+        // BCAT belongs to the title as well, so neither maps to an account.
+        if (!device && !bcat && isAllZero(info.uid)) continue;
 
         SaveEntry entry;
         entry.application_id = info.application_id;
@@ -239,7 +261,7 @@ std::vector<SaveEntry> list() {
         entry.type = info.save_data_type;
         entry.rank = info.save_data_rank;
         entry.index = info.save_data_index;
-        entry.user = device ? "" : findUser(users, info.uid);
+        entry.user = (device || bcat) ? "" : findUser(users, info.uid);
 
         auto cached = titleCache.find(entry.application_id);
         if (cached != titleCache.end()) {
@@ -256,6 +278,14 @@ std::vector<SaveEntry> list() {
               [](const SaveEntry& lhs, const SaveEntry& rhs) {
                   if (lhs.title != rhs.title) return lhs.title < rhs.title;
                   if (lhs.user != rhs.user) return lhs.user < rhs.user;
+                  // Device and BCAT both have an empty user, so keep account ->
+                  // device -> BCAT order stable within one title.
+                  const auto rankOf = [](const SaveEntry& entry) {
+                      if (entry.type == FsSaveDataType_Device) return 1;
+                      if (entry.type == FsSaveDataType_Bcat) return 2;
+                      return 0;
+                  };
+                  if (rankOf(lhs) != rankOf(rhs)) return rankOf(lhs) < rankOf(rhs);
                   if (lhs.uid.uid[0] != rhs.uid.uid[0]) {
                       return lhs.uid.uid[0] < rhs.uid.uid[0];
                   }
@@ -288,7 +318,10 @@ struct NxSaveMeta {
 
 static_assert(sizeof(NxSaveMeta) == 86, "JKSV save meta must stay 86 bytes");
 
-constexpr u32 kNxSaveMetaMagic = 0x4A4B5356;  // "JKSV"
+// JKSV stores "JKSV" as a little-endian u32. Earlier XYS releases wrote the
+// bytes in reverse order, so that value is still accepted when reading.
+constexpr u32 kNxSaveMetaMagic = 0x56534B4A;        // "JKSV"
+constexpr u32 kNxSaveMetaMagicLegacy = 0x4A4B5356;  // older XYS archives
 const char* const kNxSaveMetaName = ".nx_save_meta.bin";
 
 bool endsWithZip(const std::string& name) {
@@ -300,6 +333,48 @@ bool endsWithZip(const std::string& name) {
 
 std::string stripZip(const std::string& name) {
     return endsWithZip(name) ? name.substr(0, name.size() - 4) : name;
+}
+
+// Archives are prefixed with the owner name. Device and BCAT archives use the
+// reserved "Device_"/"BCAT_" prefixes and only belong to their own row; they
+// must never be mixed with account archives of the same title.
+enum class StampKind { Account, Device, Bcat, Unknown };
+
+StampKind stampKind(const std::string& name) {
+    std::string base = name;
+    if (base.rfind("AUTO_", 0) == 0) {
+        base = base.substr(5);
+    } else if (base.rfind("AUTO - ", 0) == 0) {
+        base = base.substr(7);
+    }
+    // Our own archives use "<owner>_<stamp>"; JKSV uses "<owner> - <date>" and
+    // writes the reserved owner names "Device"/"BCAT" for device and BCAT data.
+    if (base.rfind("BCAT_", 0) == 0 || base.rfind("BCAT - ", 0) == 0) {
+        return StampKind::Bcat;
+    }
+    if (base.rfind("Device_", 0) == 0 || base.rfind("Device - ", 0) == 0) {
+        return StampKind::Device;
+    }
+    // Recognised account layouts answer without opening the archive.
+    const size_t separator = base.rfind('_');
+    if (separator != std::string::npos && separator > 0 &&
+        hasLocalStamp(base.substr(separator + 1))) {
+        return StampKind::Account;
+    }
+    const size_t jksv = base.rfind(" - ");
+    if (jksv != std::string::npos && jksv > 0 &&
+        isJksvStamp(base.substr(jksv + 3))) {
+        return StampKind::Account;
+    }
+    // Renamed archives: the caller may read the metadata to classify them.
+    return StampKind::Unknown;
+}
+
+StampKind entryKind(u8 type) {
+    const auto saveType = static_cast<FsSaveDataType>(type);
+    if (saveType == FsSaveDataType_Bcat) return StampKind::Bcat;
+    if (saveType == FsSaveDataType_Device) return StampKind::Device;
+    return StampKind::Account;
 }
 
 long long modifiedTime(const std::string& path) {
@@ -314,7 +389,16 @@ bool readNxMeta(const std::string& zipPath, NxSaveMeta& meta) {
     if (!zipx::readEntry(zipPath, kNxSaveMetaName, data, err)) return false;
     if (data.size() < sizeof(NxSaveMeta)) return false;
     std::memcpy(&meta, data.data(), sizeof(meta));
-    return meta.magic == kNxSaveMetaMagic;
+    return meta.magic == kNxSaveMetaMagic || meta.magic == kNxSaveMetaMagicLegacy;
+}
+
+// Renamed archives lose their type prefix, so read the save type from the
+// metadata instead. Archives without usable metadata stay account saves, which
+// is what all of them looked like before the types were split.
+StampKind kindFromMeta(const std::string& zipPath) {
+    NxSaveMeta meta = {};
+    if (!readNxMeta(zipPath, meta)) return StampKind::Account;
+    return entryKind(meta.save_data_type);
 }
 
 NxSaveMeta buildNxMeta(const SaveEntry& entry) {
@@ -481,9 +565,11 @@ std::string hashFor(const std::string& zipPath) {
 FsSaveDataAttribute attrFor(const SaveEntry& entry) {
     FsSaveDataAttribute attr = {};
     attr.application_id = entry.application_id;
+    attr.save_data_type = entry.type;
+    // BCAT is identified by title alone; JKSV leaves the owner fields zeroed.
+    if (entry.type == FsSaveDataType_Bcat) return attr;
     attr.uid = entry.uid;
     attr.system_save_data_id = entry.system_save_data_id;
-    attr.save_data_type = entry.type;
     attr.save_data_rank = entry.rank;
     attr.save_data_index = entry.index;
     return attr;
@@ -496,6 +582,10 @@ Result mountSave(const char* name, const SaveEntry& entry, bool readOnly) {
     Result rc = readOnly
                     ? fsOpenReadOnlySaveDataFileSystem(&filesystem, space, &attr)
                     : fsOpenSaveDataFileSystem(&filesystem, space, &attr);
+    // BCAT does not always accept the read-only open; JKSV mounts it writable.
+    if (R_FAILED(rc) && readOnly && entry.type == FsSaveDataType_Bcat) {
+        rc = fsOpenSaveDataFileSystem(&filesystem, space, &attr);
+    }
     if (R_FAILED(rc)) return rc;
 
     if (fsdevMountDevice(name, filesystem) < 0) {
@@ -514,15 +604,35 @@ std::string localDir(const SaveEntry& entry, const std::string& root) {
     return fsx::join(root, hexId(entry.application_id));
 }
 
+// Account nicknames become archive prefixes, so they must not collide with the
+// reserved owners ("Device", "BCAT"), the "AUTO_" snapshot marker, the "BCAT_"
+// type test or the dot-file filter. "U_" itself is escaped too, which keeps the
+// encoding reversible for displayOwner().
+bool reservedOwnerName(const std::string& name) {
+    return name == "Device" || name == "BCAT" ||
+           name.rfind("BCAT_", 0) == 0 || name.rfind("AUTO_", 0) == 0 ||
+           name.rfind("U_", 0) == 0 || name[0] == '.';
+}
+
 std::string ownerName(const SaveEntry& entry) {
-    std::string name = entry.user.empty() ? "Device" : entry.user;
+    std::string name;
+    if (entry.type == FsSaveDataType_Bcat) {
+        name = "BCAT";
+    } else {
+        name = entry.user.empty() ? "Device" : entry.user;
+    }
     for (char& c : name) {
         if (c == '/' || c == '\\' || c == ':' || c == '*' || c == '?' ||
             c == '"' || c == '<' || c == '>' || c == '|') {
             c = '_';
         }
     }
-    return name.empty() ? "User" : name;
+    if (name.empty()) return "User";
+    if (entry.type == FsSaveDataType_Account && !entry.user.empty() &&
+        reservedOwnerName(name)) {
+        name = "U_" + name;
+    }
+    return name;
 }
 
 bool newerStamp(const std::string& lhs, const std::string& rhs) {
@@ -640,8 +750,25 @@ void scanLocal(const std::string& dir, int depth,
 
 std::vector<Candidate> localCandidates(const SaveEntry& entry,
                                        const std::string& root) {
+    std::vector<Candidate> all;
+    scanLocal(localDir(entry, root), 1, all);
+
+    const StampKind kind = entryKind(entry.type);
     std::vector<Candidate> out;
-    scanLocal(localDir(entry, root), 1, out);
+    out.reserve(all.size());
+    for (auto& candidate : all) {
+        const size_t slash = candidate.path.find_last_of('/');
+        const std::string name =
+            stripZip(candidate.path.substr(slash == std::string::npos
+                                              ? 0
+                                              : slash + 1));
+        StampKind fileKind = stampKind(name);
+        if (fileKind == StampKind::Unknown) {
+            fileKind = kindFromMeta(candidate.path);
+        }
+        if (fileKind != kind) continue;
+        out.push_back(std::move(candidate));
+    }
     return out;
 }
 
@@ -657,6 +784,14 @@ void removeStaleTemps(const std::string& dir) {
 }
 
 }  // namespace
+
+bool stampMatchesType(const std::string& stamp, FsSaveDataType type) {
+    // Cloud listings can only be judged by name; an unrecognised name is
+    // treated as an account archive.
+    StampKind kind = stampKind(stamp);
+    if (kind == StampKind::Unknown) kind = StampKind::Account;
+    return kind == entryKind(type);
+}
 
 BackupInfo backupInfo(const SaveEntry& entry, const std::string& root) {
     BackupInfo info;
@@ -715,7 +850,14 @@ std::vector<BackupFile> listBackups(const SaveEntry& entry,
                 file.note = readSmallText(candidate.path + ".note");
             }
         }
-        file.autoSnapshot = file.stamp.rfind("AUTO_", 0) == 0;
+        file.autoSnapshot = file.stamp.rfind("AUTO_", 0) == 0 ||
+                            file.stamp.rfind("AUTO - ", 0) == 0;
+        // Keep every row to its own save type. Names answer for our own and
+        // JKSV's default archives; renamed ones fall back to the metadata so a
+        // renamed device or BCAT archive still lands in the right row.
+        StampKind kind = stampKind(file.stamp);
+        if (kind == StampKind::Unknown) kind = kindFromMeta(candidate.path);
+        if (kind != entryKind(entry.type)) continue;
         files.push_back(file);
     }
     return files;
@@ -872,7 +1014,7 @@ bool backup(const SaveEntry& entry, const std::string& root, std::string& outZip
 
     Result rc = mountSave("ssave", entry, true);
     if (R_FAILED(rc)) {
-        err = "mount save failed (is the game running?)";
+        err = i18n::str().openSaveFailed;
         return false;
     }
 
@@ -955,6 +1097,12 @@ bool restore(const SaveEntry& entry, const std::string& zipPath, std::string& er
         err = "backup belongs to a different game";
         return false;
     }
+    // A device or BCAT archive restored into an account save (or the reverse)
+    // would land in the wrong container, so trust the metadata over the name.
+    if (hasMeta && entryKind(meta.save_data_type) != entryKind(entry.type)) {
+        err = "backup type does not match this save";
+        return false;
+    }
 
     // Validate the archive before anything is deleted. Without this an empty,
     // truncated or malicious zip would wipe the save and then "succeed".
@@ -1012,7 +1160,7 @@ bool restore(const SaveEntry& entry, const std::string& zipPath, std::string& er
 
     Result rc = mountSave("ssave", entry, false);
     if (R_FAILED(rc)) {
-        err = "mount save failed (is the game running?)";
+        err = i18n::str().openSaveFailed;
         return false;
     }
 
@@ -1095,7 +1243,9 @@ bool cloudZipForDownload(const SaveEntry& entry,
     };
 
     if (newestNormal(ownerName(entry), name)) return true;
-    return includeLegacy && newestNormal("", name);
+    // Ownerless archives predate owner prefixes and are plain account saves.
+    return includeLegacy && entry.type == FsSaveDataType_Account &&
+           newestNormal("", name);
 }
 
 bool importZip(const SaveEntry& entry, const std::string& root,

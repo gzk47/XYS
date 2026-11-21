@@ -42,6 +42,9 @@ bool g_picking = false;
 int g_pickCursor = 0;
 std::string g_pickTitle;
 std::vector<saves::BackupFile> g_picks;
+// Save type of the row the picker was opened for, so cloud rows from the same
+// title can be filtered the same way local rows are.
+FsSaveDataType g_pickType = FsSaveDataType_Account;
 bool g_davReady = false;
 WebDav g_dav;
 
@@ -327,6 +330,17 @@ const char* pickHintForCursor() {
     return text.pickHint;
 }
 
+// Device and BCAT archives use reserved owner prefixes; show them with the same
+// labels as the main list instead of the raw English prefix.
+std::string ownerText(const std::string& owner) {
+    const Strings& text = i18n::str();
+    if (owner.rfind("U_", 0) != 0) {
+        if (owner == "BCAT") return text.bcatLabel;
+        if (owner == "Device") return text.deviceLabel;
+    }
+    return saves::displayOwner(owner);
+}
+
 ui::State makeState() {
     const Strings& text = i18n::str();
 
@@ -388,17 +402,32 @@ ui::State makeState() {
                 source = pick.source == "local"    ? text.localLabel
                          : pick.source == "cloud"  ? text.cloudLabel
                                                    : pick.source;
-                if (!pick.owner.empty()) source += " · " + pick.owner;
+                if (!pick.owner.empty()) {
+                    source += " · " +
+                              (pick.source == "JKSV"
+                                   ? pick.owner
+                                   : ownerText(pick.owner));
+                }
                 if (pick.autoSnapshot) source += " · " + std::string(text.autoLabel);
             }
             std::string target = text.deviceLabel;
-            if (g_cursor >= 0 && g_cursor < static_cast<int>(g_saves.size()) &&
-                !g_saves[g_cursor].user.empty()) {
-                target = g_saves[g_cursor].user;
+            bool bcat = false;
+            if (g_cursor >= 0 && g_cursor < static_cast<int>(g_saves.size())) {
+                const SaveEntry& entry = g_saves[g_cursor];
+                bcat = entry.type == FsSaveDataType_Bcat;
+                if (bcat) {
+                    target = text.bcatLabel;
+                } else if (!entry.user.empty()) {
+                    target = entry.user;
+                }
             }
             state.promptMessage =
                 i18n::format(text.restoreFlowFmt, source.c_str(), target.c_str()) +
                 "\n" + text.restoreWarn;
+            if (bcat) {
+                state.promptMessage += "\n";
+                state.promptMessage += text.bcatRestoreWarn;
+            }
         } else if (g_prompt == Prompt::Delete) {
             state.promptTitle = text.deleteTitle;
             state.promptMessage = text.deleteConfirm;
@@ -419,8 +448,10 @@ ui::State makeState() {
             std::string label;
             if (g_cursor < static_cast<int>(g_saves.size())) {
                 const SaveEntry& entry = g_saves[g_cursor];
+                const bool bcat = entry.type == FsSaveDataType_Bcat;
                 label = entry.title + " · " +
-                        (entry.user.empty() ? text.deviceLabel : entry.user);
+                        (bcat ? text.bcatLabel
+                              : entry.user.empty() ? text.deviceLabel : entry.user);
             }
             state.promptTitle =
                 i18n::format(text.backupOneTitle, label.c_str());
@@ -447,8 +478,14 @@ ui::State makeState() {
         case 5:
             state.fieldExample = text.exampleSound;
             break;
-        default:
+        case 6:
             state.fieldExample = text.exampleJksv;
+            break;
+        case 7:
+            state.fieldExample = text.exampleBcat;
+            break;
+        default:
+            state.fieldExample = text.exampleKeep;
             break;
     }
 
@@ -464,6 +501,9 @@ ui::State makeState() {
          g_config.sound ? text.settingsOn : text.settingsOff, false},
         {text.settingsJksv,
          g_config.readJksv ? text.settingsOn : text.settingsOff, false},
+        {text.settingsBcat,
+         g_config.bcat ? text.settingsOn : text.settingsOff, false},
+        {text.settingsKeep, std::to_string(g_config.keepBackups), false},
     };
 
     state.rows.reserve(g_saves.size());
@@ -480,7 +520,9 @@ ui::State makeState() {
         } else {
             row.source = pick.source;
         }
-        if (!pick.owner.empty()) row.source += " · " + pick.owner;
+        if (!pick.owner.empty()) {
+            row.source += " · " + ownerText(pick.owner);
+        }
         if (pick.autoSnapshot) row.source += " · " + std::string(text.autoLabel);
         state.picks.push_back(row);
     }
@@ -490,7 +532,10 @@ ui::State makeState() {
         ui::Row row;
         row.appId = entry.application_id;
         row.title = entry.title;
-        row.user = entry.user.empty() ? text.deviceLabel : entry.user;
+        row.bcat = entry.type == FsSaveDataType_Bcat;
+        row.user = entry.user.empty()
+                       ? (row.bcat ? text.bcatLabel : text.deviceLabel)
+                       : entry.user;
         row.sizeMb = static_cast<double>(entry.size) / (1024.0 * 1024.0);
         if (i < g_backupInfos.size()) {
             row.backups = g_backupInfos[i].count;
@@ -518,7 +563,7 @@ void playSfx(sound::Sfx sfx) {
 }
 
 void reloadSaves() {
-    g_saves = saves::list();
+    g_saves = saves::list(g_config.bcat);
     g_backupInfos.clear();
     g_backupInfos.reserve(g_saves.size());
     for (const auto& entry : g_saves) {
@@ -712,6 +757,9 @@ void addCloudPick(const std::string& name, const saves::BackupNotes& notes) {
         stamp.find("..") != std::string::npos) {
         return;
     }
+    // Keep device, BCAT and account rows separate; cloud folders hold every
+    // kind of archive for the title.
+    if (!saves::stampMatchesType(stamp, g_pickType)) return;
 
     const auto note = notes.find(name);
     for (auto& pick : g_picks) {
@@ -771,6 +819,7 @@ void openPicker() {
         return;
     }
     const SaveEntry entry = g_saves[g_cursor];
+    g_pickType = static_cast<FsSaveDataType>(entry.type);
     g_picks = saves::listBackups(entry, g_backupDir, g_config.readJksv);
     const bool cloud = !g_config.baseUrl.empty() && ensureCloud();
     if (g_picks.empty() && !cloud) {
@@ -779,7 +828,9 @@ void openPicker() {
     }
     g_pickCursor = 0;
     g_pickTitle = entry.title + " · " +
-                  (entry.user.empty() ? text.deviceLabel : entry.user);
+                  (entry.type == FsSaveDataType_Bcat
+                       ? text.bcatLabel
+                       : entry.user.empty() ? text.deviceLabel : entry.user);
     g_picking = true;
     g_status.clear();
 
@@ -1053,18 +1104,57 @@ std::string askText(const std::string& guide, const std::string& initial,
     return stripBlank(std::string(out));
 }
 
+// Numeric entry for the backup retention setting. Returns "" when cancelled.
+std::string askNumber(const std::string& guide, const std::string& initial) {
+    SwkbdConfig kbd;
+    if (R_FAILED(swkbdCreate(&kbd, 0))) return "";
+    swkbdConfigMakePresetDefault(&kbd);
+    swkbdConfigSetType(&kbd, SwkbdType_NumPad);
+    swkbdConfigSetGuideText(&kbd, guide.c_str());
+    if (!initial.empty()) swkbdConfigSetInitialText(&kbd, initial.c_str());
+
+    char out[16] = {0};
+    const Result rc = swkbdShow(&kbd, out, sizeof(out));
+    swkbdClose(&kbd);
+    if (R_FAILED(rc)) return "";
+    return stripBlank(std::string(out));
+}
+
 void editSetting() {
     const Strings& text = i18n::str();
 
-    // The snapshot, sound and JKSV switches have no text value: A toggles them.
-    if (g_fieldCursor >= 4 && g_fieldCursor <= 6) {
-        if (g_fieldCursor == 4) {
-            g_config.autoSnapshot = !g_config.autoSnapshot;
-        } else if (g_fieldCursor == 5) {
-            g_config.sound = !g_config.sound;
-        } else {
-            g_config.readJksv = !g_config.readJksv;
+    // Switch rows have no text value: A toggles them.
+    if (g_fieldCursor >= 4 && g_fieldCursor <= 7) {
+        bool* flag = &g_config.autoSnapshot;
+        if (g_fieldCursor == 5) {
+            flag = &g_config.sound;
+        } else if (g_fieldCursor == 6) {
+            flag = &g_config.readJksv;
+        } else if (g_fieldCursor == 7) {
+            flag = &g_config.bcat;
         }
+        *flag = !*flag;
+        if (!config::save(g_config)) {
+            setStatus(i18n::format(text.settingsSaveFailed, config::path()));
+            return;
+        }
+        // Turning BCAT on or off changes which saves are listed.
+        if (g_fieldCursor == 7) reloadSaves();
+        setStatus(text.settingsSaved);
+        return;
+    }
+
+    if (g_fieldCursor == 8) {
+        const std::string value =
+            askNumber(text.exampleKeep, std::to_string(g_config.keepBackups));
+        if (value.empty()) {
+            paint();
+            return;
+        }
+        long parsed = strtol(value.c_str(), nullptr, 10);
+        if (parsed < 0) parsed = 0;
+        if (parsed > 999) parsed = 999;
+        g_config.keepBackups = static_cast<int>(parsed);
         if (!config::save(g_config)) {
             setStatus(i18n::format(text.settingsSaveFailed, config::path()));
             return;
@@ -1600,7 +1690,18 @@ int main(int argc, char** argv) {
     g_config = config::load();
     applyBackupDir();
 
-    if (!ui::init("romfs:/font.ttf")) return 1;
+    if (!ui::init()) {
+        // Leave a hint on the SD card: without a renderer or shared font the
+        // app can only exit, and a silent return to hbmenu is hard to diagnose.
+        if (g_hasSd) {
+            fsx::mkdirs("sdmc:/switch/xys");
+            if (FILE* log = fopen("sdmc:/switch/xys/error.log", "w")) {
+                fprintf(log, "ui::init failed: %s\n", ui::lastError());
+                fclose(log);
+            }
+        }
+        return 1;
+    }
     sound::init();
     padConfigureInput(1, HidNpadStyleSet_NpadStandard);
     padInitializeDefault(&g_pad);
@@ -1748,7 +1849,7 @@ int main(int argc, char** argv) {
         } else if (g_screen == ui::Screen::Settings) {
             if (move != 0) {
                 playSfx(sound::Sfx::Move);
-                g_fieldCursor = (g_fieldCursor + move + 7) % 7;
+                g_fieldCursor = (g_fieldCursor + move + 9) % 9;
             }
             if (down & HidNpadButton_A) {
                 playSfx(sound::Sfx::Confirm);
@@ -1831,7 +1932,7 @@ int main(int argc, char** argv) {
             } else if (down & HidNpadButton_B) {
                 playSfx(sound::Sfx::Cancel);
                 g_picking = false;
-                setStatus(text.restoreCancelled);
+                setStatus("");
             }
         } else {
             if ((page != 0 || move != 0) && !g_saves.empty()) {

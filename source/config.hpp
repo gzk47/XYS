@@ -13,6 +13,8 @@ struct Config {
     bool sound = true;
     // Include read-only JKSV archives in the backup picker.
     bool readJksv = true;
+    // Show and back up BCAT (downloadable event data) saves.
+    bool bcat = false;
     // Keep at most this many local archives per game and kind (0 = unlimited).
     int keepBackups = 10;
 };
