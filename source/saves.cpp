@@ -316,12 +316,12 @@ struct NxSaveMeta {
 };
 #pragma pack(pop)
 
-static_assert(sizeof(NxSaveMeta) == 86, "JKSV save meta must stay 86 bytes");
+static_assert(sizeof(NxSaveMeta) == 86, "save meta must stay 86 bytes");
 
-// JKSV stores "JKSV" as a little-endian u32. Earlier XYS releases wrote the
-// bytes in reverse order, so that value is still accepted when reading.
-constexpr u32 kNxSaveMetaMagic = 0x56534B4A;        // "JKSV"
-constexpr u32 kNxSaveMetaMagicLegacy = 0x4A4B5356;  // older XYS archives
+// XYS writes its own magic; JKSV archives still carry theirs, so both values
+// are accepted when reading.
+constexpr u32 kMagicXys = 0x00535958;   // "XYS\0"
+constexpr u32 kMagicJksv = 0x56534B4A;  // "JKSV"
 const char* const kNxSaveMetaName = ".nx_save_meta.bin";
 
 bool endsWithZip(const std::string& name) {
@@ -389,7 +389,7 @@ bool readNxMeta(const std::string& zipPath, NxSaveMeta& meta) {
     if (!zipx::readEntry(zipPath, kNxSaveMetaName, data, err)) return false;
     if (data.size() < sizeof(NxSaveMeta)) return false;
     std::memcpy(&meta, data.data(), sizeof(meta));
-    return meta.magic == kNxSaveMetaMagic || meta.magic == kNxSaveMetaMagicLegacy;
+    return meta.magic == kMagicXys || meta.magic == kMagicJksv;
 }
 
 // Renamed archives lose their type prefix, so read the save type from the
@@ -403,7 +403,7 @@ StampKind kindFromMeta(const std::string& zipPath) {
 
 NxSaveMeta buildNxMeta(const SaveEntry& entry) {
     NxSaveMeta meta = {};
-    meta.magic = kNxSaveMetaMagic;
+    meta.magic = kMagicXys;
     meta.revision = 1;
     meta.application_id = entry.application_id;
     meta.uid = entry.uid;
