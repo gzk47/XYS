@@ -19,6 +19,7 @@ struct SaveEntry {
     u8 rank = 0;
     u16 index = 0;
     std::string title;
+    std::string sortKey;  // title ordering key: digits, latin, pinyin initial
     std::string user;
 };
 

@@ -11,6 +11,7 @@
 
 #include "fsutil.hpp"
 #include "i18n.hpp"
+#include "sort_key.h"
 #include "zipx.hpp"
 
 namespace saves {
@@ -270,13 +271,14 @@ std::vector<SaveEntry> list(bool includeBcat) {
             entry.title = lookupTitle(entry.application_id);
             titleCache[entry.application_id] = entry.title;
         }
+        entry.sortKey = xys::makeSortKey(entry.title);
         entries.push_back(entry);
     }
     fsSaveDataInfoReaderClose(&reader);
 
     std::sort(entries.begin(), entries.end(),
               [](const SaveEntry& lhs, const SaveEntry& rhs) {
-                  if (lhs.title != rhs.title) return lhs.title < rhs.title;
+                  if (lhs.sortKey != rhs.sortKey) return lhs.sortKey < rhs.sortKey;
                   if (lhs.user != rhs.user) return lhs.user < rhs.user;
                   // Device and BCAT both have an empty user, so keep account ->
                   // device -> BCAT order stable within one title.
