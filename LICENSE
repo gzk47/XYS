@@ -1,0 +1,36 @@
+XYS - Nintendo Switch save backup and sync tool
+Copyright (c) 2026 gzk47. All rights reserved.
+
+This is source-available software, not open source. The copyright holder
+(gzk47) keeps the final say over the project, its code and its releases.
+
+Permitted:
+  - read, build and run this software;
+  - modify it for private, non-commercial use on hardware you own;
+  - fork and publish a modified copy solely to submit a pull request, provided
+    the fork keeps this notice and is not presented as an official release;
+  - share unmodified copies of the official release archive together with
+    this notice.
+
+Contributions: by submitting a pull request you confirm that you own the code
+or are allowed to submit it, and you grant the copyright holder a permanent,
+worldwide, royalty-free, irrevocable licence to use, modify, sublicense and
+distribute your contribution in this project and its future versions.
+
+Not permitted without prior written permission:
+  - distributing this software or any modified version, in source or binary;
+  - commercial use, sale, rental or bundling into another product;
+  - removing this notice or the author's attribution;
+  - using the name "XYS", its icon or anything confusingly similar for a
+    derivative work, or implying that a derivative work is published or
+    endorsed by the author.
+
+Bundled third-party components remain under their own licences.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHOR BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY ARISING FROM THE
+USE OF THIS SOFTWARE.
+
+Any use outside the permissions above terminates the permission granted here.
