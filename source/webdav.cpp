@@ -166,8 +166,10 @@ std::string WebDav::fileUrl(const std::string& appId, const std::string& name) c
 
 bool WebDav::listVersions(const std::string& appId, std::vector<std::string>& names,
                           std::string& err,
-                          const std::function<bool()>& cancelled) {
+                          const std::function<bool()>& cancelled,
+                          bool* hasIcon) {
     names.clear();
+    if (hasIcon) *hasIcon = false;
 
     CURL* handle = curl_easy_init();
     if (!handle) {
@@ -220,6 +222,8 @@ bool WebDav::listVersions(const std::string& appId, std::vector<std::string>& na
         const std::string name = baseName(href);
         if (name.size() > 4 && name.compare(name.size() - 4, 4, ".zip") == 0) {
             names.push_back(name);
+        } else if (hasIcon && name == "icon.jpg") {
+            *hasIcon = true;
         }
     }
     std::sort(names.begin(), names.end());

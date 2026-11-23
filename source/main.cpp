@@ -127,6 +127,36 @@ std::string cloudMetaPath(const std::string& appId) {
     return std::string(kTmpDir) + "/meta-" + appId + "/meta.txt";
 }
 
+std::string backupIconPath(const std::string& zipPath) {
+    const size_t slash = zipPath.find_last_of('/');
+    return slash == std::string::npos
+               ? std::string()
+               : zipPath.substr(0, slash) + "/icon.jpg";
+}
+
+// Icons are optional per-title companions. Sync failures never change the ZIP
+// job's result, and a failed download must not leave a partial JPEG behind.
+void syncIconToCloud(const std::string& appId, const std::string& zipPath,
+                     bool remoteHasIcon,
+                     const std::function<bool()>& cancelled) {
+    const std::string path = backupIconPath(zipPath);
+    if (remoteHasIcon || path.empty() || !fsx::exists(path) || cancelled()) {
+        return;
+    }
+    std::string err;
+    g_dav.putFile(appId, "icon.jpg", path, err, {}, cancelled, true);
+}
+
+void syncIconFromCloud(const std::string& appId, const std::string& zipPath,
+                       const std::function<bool()>& cancelled) {
+    const std::string path = backupIconPath(zipPath);
+    if (path.empty() || fsx::exists(path) || cancelled()) return;
+    std::string err;
+    if (!g_dav.getFile(appId, "icon.jpg", path, err, {}, cancelled)) {
+        std::remove(path.c_str());
+    }
+}
+
 // Downloads and validates the per-title metadata. Only an HTTP 404 means the
 // remote file is absent; every other failure leaves its contents unknown.
 CloudMetaState fetchCloudNotes(const std::string& appId,
@@ -950,6 +980,7 @@ void runCloudDownloadToLocal(const std::string& name) {
             job.ok = true;
             job.names.push_back(localPath);
             job.result = text.alreadyLocal;
+            syncIconFromCloud(appId, localPath, cancelled);
             if (!syncNoteFromCloud(appId, localPath, err, cancelled)) {
                 appendNoteSyncFailure(job);
             } else if (!saves::getNote(localPath).empty()) {
@@ -985,6 +1016,7 @@ void runCloudDownloadToLocal(const std::string& name) {
         job.ok = true;
         job.names.push_back(outZip);
         job.result = i18n::format(text.downloadedToFmt, outZip.c_str());
+        syncIconFromCloud(appId, outZip, cancelled);
         if (!syncNoteFromCloud(appId, outZip, err, cancelled)) {
             appendNoteSyncFailure(job);
         }
@@ -1237,8 +1269,9 @@ void startUploadJob(const std::string& appId, const std::string& name,
         auto cancelled = [&job]() { return job.cancel.load(); };
 
         bool exists = false;
+        bool hasIcon = false;
         std::vector<std::string> names;
-        if (g_dav.listVersions(appId, names, err, cancelled)) {
+        if (g_dav.listVersions(appId, names, err, cancelled, &hasIcon)) {
             exists = std::find(names.begin(), names.end(), name) != names.end();
         }
 
@@ -1267,6 +1300,7 @@ void startUploadJob(const std::string& appId, const std::string& name,
 
         job.percent = 100;
         job.names.push_back(name);
+        syncIconToCloud(appId, zipPath, hasIcon, cancelled);
         const std::string note = saves::getNote(zipPath);
         if (!note.empty()) {
             if (syncNoteToCloud(appId, name, note, err, cancelled)) {
@@ -1302,6 +1336,7 @@ void runUpload() {
         std::string lastError;
         std::map<std::string, std::vector<std::string>> cloudLists;
         std::map<std::string, std::string> cloudListErrors;
+        std::set<std::string> cloudIcons;
         std::set<std::string> legacyUploads;
         const int count = static_cast<int>(entries.size());
 
@@ -1336,19 +1371,25 @@ void runUpload() {
             }
             if (remote == cloudLists.end()) {
                 std::vector<std::string> names;
-                if (!g_dav.listVersions(appId, names, err, cancelled)) {
+                bool hasIcon = false;
+                if (!g_dav.listVersions(appId, names, err, cancelled, &hasIcon)) {
                     if (job.cancel.load()) break;
                     cloudListErrors[appId] = err;
                     ++failed;
                     lastError = err;
                     continue;
                 }
+                if (hasIcon) cloudIcons.insert(appId);
                 remote = cloudLists.emplace(appId, names).first;
             }
             const std::string note = saves::getNote(zipPath);
             if (std::find(remote->second.begin(), remote->second.end(), name) !=
                 remote->second.end()) {
                 ++skipped;
+                syncIconToCloud(appId, zipPath,
+                                cloudIcons.find(appId) != cloudIcons.end(),
+                                cancelled);
+                cloudIcons.insert(appId);
                 if (!note.empty() &&
                     !syncNoteToCloud(appId, name, note, err, cancelled)) {
                     notesFailed = true;
@@ -1373,6 +1414,10 @@ void runUpload() {
             if (ok) {
                 ++done;
                 remote->second.push_back(name);
+                syncIconToCloud(appId, zipPath,
+                                cloudIcons.find(appId) != cloudIcons.end(),
+                                cancelled);
+                cloudIcons.insert(appId);
                 if (!note.empty() &&
                     !syncNoteToCloud(appId, name, note, err, cancelled)) {
                     notesFailed = true;
@@ -1449,6 +1494,7 @@ void runDownload(bool all = false) {
             std::string lastError;
             std::map<std::string, std::vector<std::string>> cloudLists;
             std::map<std::string, std::string> cloudListErrors;
+            std::set<std::string> iconsHandled;
             std::set<std::string> legacyDownloads;
             const int count = static_cast<int>(entries.size());
 
@@ -1511,6 +1557,9 @@ void runDownload(bool all = false) {
                 }
                 if (!localPath.empty()) {
                     ++skipped;
+                    if (iconsHandled.insert(appId).second) {
+                        syncIconFromCloud(appId, localPath, cancelled);
+                    }
                     if (saves::getNote(localPath).empty() &&
                         !syncNoteFromCloud(appId, localPath, err, cancelled)) {
                         notesFailed = true;
@@ -1540,6 +1589,9 @@ void runDownload(bool all = false) {
                 remove(tmp.c_str());
                 if (ok) {
                     ++done;
+                    if (iconsHandled.insert(appId).second) {
+                        syncIconFromCloud(appId, outZip, cancelled);
+                    }
                     if (!syncNoteFromCloud(appId, outZip, err, cancelled)) {
                         notesFailed = true;
                     }
@@ -1624,6 +1676,7 @@ void runDownload(bool all = false) {
             job.percent = 100;
             job.ok = true;
             job.result = text.alreadyLocal;
+            syncIconFromCloud(appId, localPath, cancelled);
             if (!syncNoteFromCloud(appId, localPath, err, cancelled)) {
                 appendNoteSyncFailure(job);
             }
@@ -1659,6 +1712,7 @@ void runDownload(bool all = false) {
         job.percent = 100;
         job.ok = true;
         job.result = i18n::format(text.downloadedToFmt, outZip.c_str());
+        syncIconFromCloud(appId, outZip, cancelled);
         if (!syncNoteFromCloud(appId, outZip, err, cancelled)) {
             appendNoteSyncFailure(job);
         }

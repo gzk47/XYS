@@ -751,7 +751,7 @@ void draw(const State& state) {
                state.sdOk ? kGreen : kRed);
 
     // Save list.
-    card(16, 95, 776, 536, 16);
+    card(16, 95, 783, 536, 16);
 
     const int rowHeight = 88;
     const int visibleRows = 6;
@@ -772,11 +772,11 @@ void draw(const State& state) {
             const int y = 104 + i * rowHeight;
             const bool selected = index == state.cursor;
             if (selected) {
-                fillRounded(24, y - 2, 760, 84, 12, kSelectedLine);
-                fillRounded(25, y - 1, 758, 82, 11, kSelected);
+                fillRounded(24, y - 2, 767, 84, 12, kSelectedLine);
+                fillRounded(25, y - 1, 765, 82, 11, kSelected);
                 fillRounded(26, y + 12, 3, 56, 2, kAccent);
             } else if (i > 0 && index - 1 != state.cursor) {
-                fill(108, y - 3, 652, 1, kHair);
+                fill(108, y - 3, 659, 1, kHair);
             }
 
             drawIcon(iconFor(row), 40, y + 12, 56, row.title);
@@ -792,12 +792,12 @@ void draw(const State& state) {
                 const std::string count =
                     i18n::format(text.backupsFmt, row.backups);
                 const int w = textWidth(count, 0) + 22;
-                pill(760 - w, y + 12, w, 28, kPillFill, kPillLine);
-                drawTextCenteredVC(count, 760 - w / 2, y + 26, 0, kAccent);
-                drawTextRight(fitText(row.latest, 0, 240), 760, y + 46, 0,
+                pill(767 - w, y + 12, w, 28, kPillFill, kPillLine);
+                drawTextCenteredVC(count, 767 - w / 2, y + 26, 0, kAccent);
+                drawTextRight(fitText(row.latest, 0, 247), 767, y + 46, 0,
                               kMuted);
             } else {
-                drawTextRight(text.noBackup, 760, y + 12, 0, kMuted);
+                drawTextRight(text.noBackup, 767, y + 12, 0, kMuted);
             }
         }
     }

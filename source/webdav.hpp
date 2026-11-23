@@ -13,7 +13,8 @@ public:
     // `cancelled` aborts the request when it returns true.
     bool listVersions(const std::string& appId, std::vector<std::string>& names,
                       std::string& err,
-                      const std::function<bool()>& cancelled = {});
+                      const std::function<bool()>& cancelled = {},
+                      bool* hasIcon = nullptr);
     bool ensureCollection(const std::string& appId, std::string& err,
                           const std::function<bool()>& cancelled = {});
     // `onProgress` receives 0-100 based on transferred bytes.
