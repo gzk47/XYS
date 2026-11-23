@@ -160,6 +160,20 @@ std::string localizeError(const std::string& err) {
         label = text.errEmptySave;
     } else if (err.find("backup type does not match") != std::string::npos) {
         label = text.errTypeMismatch;
+    } else if (err.find("backup belongs to a different game") !=
+               std::string::npos) {
+        label = text.errWrongGame;
+    } else if (err.find("backup archive is empty") != std::string::npos) {
+        label = text.errEmptyArchive;
+    } else if (err.find("extend save data failed") != std::string::npos) {
+        label = text.errExtendFailed;
+    } else if (err.find("final commit failed") != std::string::npos) {
+        label = text.errCommitFailed;
+    } else if (err.find("no local normal backup") != std::string::npos) {
+        label = text.errNoLocalBackup;
+    } else if (err.find("cannot store downloaded backup") !=
+               std::string::npos) {
+        label = text.errStoreFailed;
     } else if (err.find("cannot open zip") != std::string::npos ||
                err.find("unsafe zip entry") != std::string::npos ||
                err.find("cannot read zip entry") != std::string::npos ||

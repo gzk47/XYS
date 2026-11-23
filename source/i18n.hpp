@@ -181,6 +181,13 @@ struct Strings {
     const char* hintJksv;
     // Restore rejected because the archive holds another save type.
     const char* errTypeMismatch;
+    // Restore and download failures reported by saves.cpp.
+    const char* errWrongGame;
+    const char* errEmptyArchive;
+    const char* errExtendFailed;
+    const char* errCommitFailed;
+    const char* errNoLocalBackup;
+    const char* errStoreFailed;
 };
 
 namespace i18n {

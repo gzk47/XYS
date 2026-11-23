@@ -165,5 +165,11 @@ const Strings kEn = {
     "Turns the move and confirm sounds on or off",
     "Shows the read-only archives in sdmc:/JKSV",
     "Backup type does not match this save",
+    "Backup is for a different game",
+    "Backup contains no save files",
+    "Cannot enlarge the save data",
+    "Cannot finish writing the save data",
+    "No normal local backup",
+    "Cannot store the downloaded backup",
 };
 }  // namespace i18n

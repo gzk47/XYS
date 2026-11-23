@@ -440,12 +440,26 @@ std::string readSmallText(const std::string& path) {
 }
 
 bool writeFile(const std::string& path, const std::vector<unsigned char>& data) {
-    FILE* file = fopen(path.c_str(), "wb");
+    // Write next to the target and rename over it, so a power loss leaves either
+    // the old file or the new one, never a half-written meta.txt or icon.
+    const std::string tmp = path + ".tmp";
+    FILE* file = fopen(tmp.c_str(), "wb");
     if (!file) return false;
     const bool ok = data.empty() ||
                     fwrite(data.data(), 1, data.size(), file) == data.size();
-    fclose(file);
-    return ok;
+    if (fclose(file) != 0 || !ok) {
+        std::remove(tmp.c_str());
+        return false;
+    }
+    if (std::rename(tmp.c_str(), path.c_str()) != 0) {
+        // Some FAT implementations refuse to replace an existing file.
+        std::remove(path.c_str());
+        if (std::rename(tmp.c_str(), path.c_str()) != 0) {
+            std::remove(tmp.c_str());
+            return false;
+        }
+    }
+    return true;
 }
 
 // Backup metadata lives in <backup dir>/meta.txt:
