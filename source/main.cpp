@@ -103,12 +103,15 @@ std::thread g_jobThread;
 int g_lastJobPercent = -1;
 u64 g_lastJobPaint = 0;
 std::string g_restoreAfterDownload;
+// Remote name of a restore staged from the cloud, used in the status line.
+std::string g_restoreLabel;
 
 void mergeCloudPicks(const std::vector<std::string>& names,
                      const saves::BackupNotes& notes);
 void addCloudPick(const std::string& name, const saves::BackupNotes& notes);
 void addLocalPick(const std::string& path);
 void sortPicks();
+void refreshPicks();
 void runRestore(const std::string& zipPath);
 
 void setJobStatus(Job& job, const std::string& status) {
@@ -344,6 +347,9 @@ void finishJob() {
         if (ok && !cancelled) {
             runRestore(path);
             std::remove(path.c_str());
+        } else {
+            // Nothing was restored, so drop the pending remote label.
+            g_restoreLabel.clear();
         }
     }
 }
@@ -700,6 +706,13 @@ void runBackup(bool all) {
 
 void runRestore(const std::string& zipPath) {
     const Strings& text = i18n::str();
+    // A restore staged from the cloud arrives as a temporary file; keep its
+    // remote name for the status line instead of the temporary file name.
+    std::string restoredName = g_restoreLabel;
+    g_restoreLabel.clear();
+    if (restoredName.empty()) {
+        restoredName = zipPath.substr(zipPath.find_last_of('/') + 1);
+    }
     if (g_saves.empty()) {
         setStatus(text.noSaves);
         return;
@@ -752,14 +765,16 @@ void runRestore(const std::string& zipPath) {
     if (!restored) {
         // The automatic snapshot may have been written before the failure.
         reloadSaves();
+        refreshPicks();
         playSfx(sound::Sfx::Error);
         setStatus(i18n::format(text.restoreFailedFmt, i18n::localizeError(err).c_str()));
         return;
     }
     reloadSaves();
+    // The snapshot taken before the restore is a new row in the picker.
+    refreshPicks();
     playSfx(sound::Sfx::Success);
-    const std::string name = zipPath.substr(zipPath.find_last_of('/') + 1);
-    setStatus(i18n::format(text.restoreDoneFmt, name.c_str()));
+    setStatus(i18n::format(text.restoreDoneFmt, restoredName.c_str()));
 }
 
 // Keeps every remote version as its own row: the list has to make clear which
@@ -842,6 +857,49 @@ void mergeCloudPicks(const std::vector<std::string>& names,
     sortPicks();
 }
 
+// Rebuilds the picker rows from disk while keeping the cloud rows that were
+// merged into the list. Needed after a restore, because the list stays open
+// while the snapshot is written.
+void refreshPicks() {
+    if (!g_picking || g_saves.empty()) return;
+
+    std::string selected;
+    if (g_pickCursor >= 0 && g_pickCursor < static_cast<int>(g_picks.size())) {
+        selected = g_picks[g_pickCursor].path;
+    }
+
+    std::vector<std::string> cloudNames;
+    saves::BackupNotes cloudNotes;
+    for (const auto& pick : g_picks) {
+        if (pick.source == "cloud" && pick.path.rfind("cloud:", 0) == 0) {
+            const std::string name = pick.path.substr(6);
+            cloudNames.push_back(name);
+            if (!pick.note.empty()) cloudNotes[name] = pick.note;
+        }
+    }
+
+    g_picks = saves::listBackups(g_saves[g_cursor], g_backupDir,
+                                 g_config.readJksv);
+    mergeCloudPicks(cloudNames, cloudNotes);
+
+    // Keep the highlight on the same archive; the rebuilt list may have gained
+    // a row before it.
+    if (!selected.empty()) {
+        for (size_t i = 0; i < g_picks.size(); ++i) {
+            if (g_picks[i].path == selected) {
+                g_pickCursor = static_cast<int>(i);
+                break;
+            }
+        }
+    }
+    if (g_picks.empty()) {
+        g_picking = false;
+        g_pickCursor = 0;
+    } else if (g_pickCursor >= static_cast<int>(g_picks.size())) {
+        g_pickCursor = static_cast<int>(g_picks.size()) - 1;
+    }
+}
+
 void openPicker() {
     const Strings& text = i18n::str();
     if (g_saves.empty()) {
@@ -909,6 +967,7 @@ void runCloudDownload(const std::string& name) {
     const std::string appId = saves::hexId(entry.application_id);
     const std::string tmp = std::string(kTmpDir) + "/" + appId + "-restore.zip";
     g_restoreAfterDownload = tmp;
+    g_restoreLabel = name;
     startJob(JobKind::Download, [appId, name, tmp](Job& job) {
         const Strings& text = i18n::str();
         setJobStatus(job, name);
@@ -966,9 +1025,8 @@ void runCloudDownloadToLocal(const std::string& name) {
         return;
     }
 
-    // A new ZIP uses the main-screen progress view. For an existing ZIP with
-    // an empty note, keep the picker open so its local row updates in place.
-    if (localPath.empty()) g_picking = false;
+    // The picker stays open during the download: the progress panel is drawn
+    // above it, and the finished archive is added as a local row in place.
     startJob(JobKind::Download,
              [entry, appId, name, stamp, tmp, root, localPath](Job& job) {
         const Strings& text = i18n::str();
@@ -1934,7 +1992,6 @@ int main(int argc, char** argv) {
             if (down & HidNpadButton_A && !g_picks.empty()) {
                 playSfx(sound::Sfx::Confirm);
                 g_restorePath = g_picks[g_pickCursor].path;
-                g_picking = false;
                 g_prompt = Prompt::Restore;
                 paint();
             } else if (down & HidNpadButton_X) {

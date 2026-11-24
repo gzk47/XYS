@@ -841,13 +841,11 @@ void draw(const State& state) {
         }
     }
 
-    // Footer. Hidden while the picker owns the screen so its own hint is the
-    // only key guide on display.
-    if (!state.picking) {
-        card(16, 640, 1248, 76, 14);
-        drawHintRow(text.hints, 32, 650, 28);
-        drawText(fitText(state.status, 0, 1200), 32, 686, 0, kAccent);
-    }
+    // Footer. Kept on the list screen; a modal dims it together with the rest
+    // of the background instead of leaving the bottom row empty.
+    card(16, 640, 1248, 76, 14);
+    drawHintRow(text.hints, 32, 650, 28);
+    drawText(fitText(state.status, 0, 1200), 32, 686, 0, kAccent);
 
     if (state.picking) {
         fill(0, 0, kWidth, kHeight, kScrim);
